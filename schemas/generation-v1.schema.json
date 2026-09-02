@@ -1,0 +1,14 @@
+{
+  "title": "ebook-tts generation run v1",
+  "type": "object",
+  "required": ["manifest_version", "kind", "run_id", "plan_sha256", "status", "generation", "sections"],
+  "properties": {
+    "manifest_version": {"const": 1},
+    "kind": {"const": "ebook-tts-generation"},
+    "run_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {"enum": ["in_progress", "partial", "complete"]},
+    "generation": {"type": "object"},
+    "sections": {"type": "object"}
+  }
+}
