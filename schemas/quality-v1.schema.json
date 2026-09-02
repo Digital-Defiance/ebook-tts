@@ -1,0 +1,16 @@
+{
+  "title": "ebook-tts quality report v1",
+  "type": "object",
+  "required": ["manifest_version", "kind", "qa_id", "run_id", "plan_sha256", "status", "failures", "warnings", "tracks"],
+  "properties": {
+    "manifest_version": {"const": 1},
+    "kind": {"const": "ebook-tts-quality-report"},
+    "qa_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "run_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "status": {"enum": ["pass", "warn", "fail"]},
+    "failures": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "tracks": {"type": "array"}
+  }
+}

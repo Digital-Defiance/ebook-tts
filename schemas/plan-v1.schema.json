@@ -1,0 +1,29 @@
+{
+  "title": "ebook-tts immutable plan v1",
+  "type": "object",
+  "required": ["manifest_version", "kind", "plan_sha256", "source", "book", "track_count", "chunk_count", "sections"],
+  "properties": {
+    "manifest_version": {"const": 1},
+    "kind": {"const": "ebook-tts-plan"},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {
+      "type": "object",
+      "required": ["filename", "sha256"],
+      "properties": {
+        "filename": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "book": {"type": "object", "required": ["title", "authors"]},
+    "track_count": {"type": "integer", "minimum": 1},
+    "chunk_count": {"type": "integer", "minimum": 1},
+    "sections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["track_number", "title", "text_sha256", "chunks"]
+      }
+    }
+  }
+}

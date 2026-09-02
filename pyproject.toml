@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ebook-tts"
+version = "0.1.0"
+description = "Turn DRM-free EPUB books into validated, resumable audiobooks."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "ebook-tts contributors" }]
+keywords = ["audiobook", "epub", "text-to-speech", "elevenlabs", "bookplayer"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = []
+
+[project.optional-dependencies]
+elevenlabs = ["elevenlabs==2.65.0"]
+dev = [
+  "build==1.4.4",
+  "pytest==8.4.2",
+]
+
+[project.scripts]
+ebook-tts = "ebook_tts.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ebook_tts"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["ebook_tts"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"schemas" = "ebook_tts/schemas"
