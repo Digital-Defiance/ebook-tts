@@ -35,6 +35,14 @@ dev = [
 [project.scripts]
 ebook-tts = "ebook_tts.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/Digital-Defiance/ebook-tts"
+Repository = "https://github.com/Digital-Defiance/ebook-tts"
+Documentation = "https://github.com/Digital-Defiance/ebook-tts/tree/main/docs"
+Issues = "https://github.com/Digital-Defiance/ebook-tts/issues"
+Changelog = "https://github.com/Digital-Defiance/ebook-tts/blob/main/CHANGELOG.md"
+Security = "https://github.com/Digital-Defiance/ebook-tts/security/policy"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/ebook_tts"]
 

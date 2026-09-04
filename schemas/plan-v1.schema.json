@@ -1,28 +1,136 @@
 {
   "title": "ebook-tts immutable plan v1",
   "type": "object",
-  "required": ["manifest_version", "kind", "plan_sha256", "source", "book", "track_count", "chunk_count", "sections"],
+  "additionalProperties": false,
+  "required": [
+    "manifest_version", "kind", "versions", "source", "book", "cover",
+    "warnings", "configuration", "track_count", "characters", "chunk_count",
+    "sections", "plan_sha256", "created_at"
+  ],
   "properties": {
     "manifest_version": {"const": 1},
     "kind": {"const": "ebook-tts-plan"},
-    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "source": {
+    "versions": {
       "type": "object",
-      "required": ["filename", "sha256"],
+      "additionalProperties": false,
+      "required": ["extraction", "normalization", "chunker"],
       "properties": {
-        "filename": {"type": "string"},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "extraction": {"type": "integer", "minimum": 1},
+        "normalization": {"type": "integer", "minimum": 1},
+        "chunker": {"type": "integer", "minimum": 1}
       }
     },
-    "book": {"type": "object", "required": ["title", "authors"]},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "sha256"],
+      "properties": {
+        "filename": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "book": {
+      "type": "object",
+      "required": ["title", "authors"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "authors": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "cover": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file", "media_type", "sha256", "bytes"],
+          "properties": {
+            "file": {"$ref": "#/$defs/path"},
+            "media_type": {"type": ["string", "null"]},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "bytes": {"type": "integer", "minimum": 1}
+          }
+        }
+      ]
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "configuration": {
+      "type": "object",
+      "required": ["book", "sections", "normalization", "planning"],
+      "properties": {
+        "book": {"type": "object"},
+        "sections": {"type": "object"},
+        "normalization": {"type": "array", "items": {"type": "object"}},
+        "planning": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model_id", "max_characters"],
+          "properties": {
+            "model_id": {"type": "string", "minLength": 1},
+            "max_characters": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
     "track_count": {"type": "integer", "minimum": 1},
+    "characters": {"type": "integer", "minimum": 1},
     "chunk_count": {"type": "integer", "minimum": 1},
     "sections": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "type": "object",
-        "required": ["track_number", "title", "text_sha256", "chunks"]
+      "items": {"$ref": "#/$defs/section"}
+    },
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "created_at": {"type": "string", "minLength": 1},
+    "adopted": {"type": "boolean"},
+    "verification_only": {"type": "boolean"},
+    "adoption": {
+      "type": "object",
+      "required": ["format", "verification_only", "artifact_inventory_sha256", "adoption_sha256", "verified"],
+      "properties": {
+        "format": {"const": "legacy-v1"},
+        "verification_only": {"const": true},
+        "artifact_inventory_sha256": {"$ref": "#/$defs/sha256"},
+        "adoption_sha256": {"$ref": "#/$defs/sha256"},
+        "verified": {"type": "object"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+"},
+    "chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "characters", "text_sha256", "text_file"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 1},
+        "characters": {"type": "integer", "minimum": 1},
+        "text_sha256": {"$ref": "#/$defs/sha256"},
+        "text_file": {"$ref": "#/$defs/path"}
+      }
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "track_number", "chapter_number", "title", "output_stem", "source_href",
+        "source_fragment", "source_sha256", "text_sha256", "characters",
+        "text_file", "chunk_count", "chunks"
+      ],
+      "properties": {
+        "track_number": {"type": "integer", "minimum": 1},
+        "chapter_number": {"type": ["integer", "null"], "minimum": 1},
+        "title": {"type": "string", "minLength": 1},
+        "output_stem": {"type": "string", "pattern": "^[0-9]{3}_[A-Za-z0-9][A-Za-z0-9_-]*$"},
+        "source_href": {"type": "string", "minLength": 1},
+        "source_fragment": {"type": ["string", "null"]},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "text_sha256": {"$ref": "#/$defs/sha256"},
+        "characters": {"type": "integer", "minimum": 1},
+        "text_file": {"$ref": "#/$defs/path"},
+        "chunk_count": {"type": "integer", "minimum": 1},
+        "chunks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/chunk"}}
       }
     }
   }

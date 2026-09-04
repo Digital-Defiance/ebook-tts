@@ -44,6 +44,6 @@ def test_alignment_reports_exact_wer_cer_and_spans() -> None:
 def test_protected_terms_are_unicode_and_case_normalized() -> None:
   missing = missing_protected_terms(
       "She raised a glass and said slàinte mhath.",
-      ["Slàinte mhath", "Jasper Brooch"],
+      ["Slàinte mhath", "Example Name"],
   )
-  assert missing == ("Jasper Brooch",)
+  assert missing == ("Example Name",)

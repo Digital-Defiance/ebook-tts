@@ -37,6 +37,9 @@ A plan ID fingerprints the EPUB hash, metadata/selection overrides,
 normalization rules, extraction/chunker versions, model ID, and maximum chunk
 size. Plans live under `WORKSPACE/plans/<plan-id>/` and are immutable. A changed
 chunk size or correction creates another plan rather than deleting paid work.
+Before any paid operation, the manifest and every referenced full-text, chunk,
+and cover artifact are path-confined and checked against their recorded hashes,
+counts, ordering, and token sequence.
 
 Plan contents:
 
@@ -55,15 +58,23 @@ configuration.
 
 ## Generate
 
-A generation run ID fingerprints the plan plus provider, voice, model, output
-format, context, and voice settings. Generation is sequential within each
-track, resumable, and protected by a workspace lock.
+A generation run ID fingerprints the plan and paid-request settings: provider,
+voice, model, output format, context, and voice settings. Installed SDK version
+and local assembly policy are recorded separately. Generation is sequential
+within each track, resumable, and protected by a workspace lock.
 
 Before a request, the tool durably records `*.attempt.json`. Audio streams to a
 size-limited hidden partial. A complete stream is atomically renamed, decoded,
 probed, hashed, and given a sidecar. Only then is the attempt marker removed.
 Final track assembly stream-copies validated MP3 chunks and verifies complete
 decode and duration.
+
+Each native final checkpoint also stores a content-derived assembly receipt that
+binds plan/run/section identity, exact ordered request/text/audio chunk hashes
+and media, output format, metadata intent, and verified cover identity. Resume
+recomputes that receipt and rechecks every sidecar, chunk, and final byte before
+skipping work. A stale, tampered, symlinked, or uncheckpointed final MP3 fails
+closed before another provider request.
 
 Partial track selection is available through `--tracks 1,3-5`. Packaging still
 requires every planned track.
@@ -97,11 +108,12 @@ fail with instructions to create a fresh native plan for regeneration.
 ## Validate
 
 Validation creates `runs/<run-id>/qa/<qa-id>/report.json` and `report.html`.
-The QA ID includes the run and QA configuration. With `--stt none` (the
-default), validation is fully local and always rechecks planned/generated chunk
-count and order, reference hashes, chunk hashes and complete decodes, final
-hashes and complete decodes, final-versus-chunk duration, and signal metrics.
-This applies equally to native and adopted runs.
+The QA ID includes the run ID, exact canonical `run.json` fingerprint, and QA
+configuration. With `--stt none` (the default), validation is fully local and
+always rechecks planned/generated chunk count and order, reference hashes,
+chunk hashes and complete decodes, final hashes and complete decodes,
+final-versus-chunk duration, and signal metrics. Native runs must match their
+assembly receipts; adopted runs must match their plan/run/adoption provenance.
 
 Scribe transcripts are cached by audio/reference/provider/model hashes and do
 not alter paid generation manifests. `--stt elevenlabs` is an explicit paid
@@ -109,8 +121,14 @@ network operation and is never invoked by adoption or default local validation.
 
 ## Package
 
-Packaging verifies all final hashes and requires a non-failing QA report by
-default. Use `--allow-unvalidated` only for deliberate intermediate exports.
+Packaging holds the workspace lock, re-verifies the plan, reloads the selected
+run, validates final checkpoints and current audio, and requires a structurally
+valid QA report tied to the exact run manifest and every current track by
+default. Output names are derived from the exact ordered member set. Existing
+ZIPs and track directories are reused only after every expected name, size, and
+SHA-256 is rechecked; extra, missing, symlinked, stale, or corrupt members fail.
+
+Use `--allow-unvalidated` only for deliberate intermediate exports.
 `--allow-failed-qa` is an explicit exceptional override and is recorded only by
 shell history, not as a claim that the book passed.
 

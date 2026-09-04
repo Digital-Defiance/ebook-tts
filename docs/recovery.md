@@ -10,10 +10,11 @@ work and preserve it on ambiguous outcomes.
 
 ## Safe automatic cases
 
-A matching complete audio file is decoded, probed, hashed, and reused. If a
-crash occurred after the atomic audio rename but before its sidecar, the request
-hash in the filename plus local validation reconstructs the sidecar without an
-API call.
+A matching complete **chunk** audio file is decoded, probed, hashed, and reused.
+If a crash occurred after the atomic chunk rename but before its sidecar, the
+request hash in the filename plus local validation reconstructs the sidecar
+without an API call. Final tracks use a stricter assembly receipt; an existing
+final MP3 without that committed receipt is never adopted automatically.
 
 Explicit pre-audio HTTP rejections such as invalid credentials, invalid input,
 or quota/rate rejection can be corrected and retried after the marker is safely
@@ -43,8 +44,12 @@ blocked.
      --reason 'No matching request in provider history; checked YYYY-MM-DD'
    ```
 
-7. The command moves the marker and partial bytes into a timestamped quarantine
-   with `authorization.json`. It never destroys the evidence.
+7. The command acquires the workspace lock, accepts only a relative active marker
+   inside the selected run, rejects symlinks/traversal and untrusted partial
+   names, writes a prepared authorization record, then moves partial bytes before
+   the marker. If publication fails, moved evidence is rolled back. Successful
+   evidence remains in a timestamped quarantine with `authorization.json`; it is
+   never destroyed or treated as active.
 8. Rerun the original command. Exact completed checkpoints are reused.
 
 ## Never do this
@@ -58,6 +63,7 @@ blocked.
 
 ## Interrupted package or QA work
 
-Packaging uses temporary files and atomic publication; rerun it. Signal QA is
-local and safe to repeat. Completed STT transcripts are cached; ambiguous STT
+Packaging and QA hold the workspace lock and publish through temporary files.
+Rerun them after interruption. Existing package output is accepted only when all
+members re-validate. Completed STT transcripts are cached; ambiguous STT
 attempts use the same explicit recovery procedure as TTS.

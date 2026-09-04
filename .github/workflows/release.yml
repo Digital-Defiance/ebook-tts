@@ -20,6 +20,20 @@ jobs:
       - run: uv sync --all-extras
       - run: uv run pytest
       - run: uv build
+      - name: Smoke-test wheel
+        run: |
+          uv venv "$RUNNER_TEMP/ebook-tts-wheel"
+          uv pip install --python "$RUNNER_TEMP/ebook-tts-wheel/bin/python" dist/*.whl
+          "$RUNNER_TEMP/ebook-tts-wheel/bin/ebook-tts" --version
+          "$RUNNER_TEMP/ebook-tts-wheel/bin/ebook-tts" --help
+          "$RUNNER_TEMP/ebook-tts-wheel/bin/python" -c "from importlib.resources import files; assert (files('ebook_tts') / 'schemas' / 'plan-v1.schema.json').is_file()"
+      - name: Smoke-test sdist
+        run: |
+          uv venv "$RUNNER_TEMP/ebook-tts-sdist"
+          uv pip install --python "$RUNNER_TEMP/ebook-tts-sdist/bin/python" dist/*.tar.gz
+          "$RUNNER_TEMP/ebook-tts-sdist/bin/ebook-tts" --version
+          "$RUNNER_TEMP/ebook-tts-sdist/bin/ebook-tts" --help
+          "$RUNNER_TEMP/ebook-tts-sdist/bin/python" -c "from importlib.resources import files; assert (files('ebook_tts') / 'schemas' / 'plan-v1.schema.json').is_file()"
       - uses: actions/upload-artifact@v4
         with:
           name: python-distributions

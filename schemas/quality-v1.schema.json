@@ -1,16 +1,78 @@
 {
   "title": "ebook-tts quality report v1",
   "type": "object",
-  "required": ["manifest_version", "kind", "qa_id", "run_id", "plan_sha256", "status", "failures", "warnings", "tracks"],
+  "additionalProperties": false,
+  "required": [
+    "manifest_version", "kind", "qa_id", "run_id", "run_manifest_sha256",
+    "plan_sha256", "created_at", "status", "configuration", "book",
+    "expected_tracks", "validated_tracks", "failures", "warnings",
+    "transcription", "tracks"
+  ],
   "properties": {
     "manifest_version": {"const": 1},
     "kind": {"const": "ebook-tts-quality-report"},
-    "qa_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "run_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "qa_id": {"$ref": "#/$defs/sha256"},
+    "run_id": {"$ref": "#/$defs/sha256"},
+    "run_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "created_at": {"type": "string", "minLength": 1},
     "status": {"enum": ["pass", "warn", "fail"]},
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["qa_version", "stt_provider", "stt_model", "language", "max_word_error_rate", "max_character_error_rate", "max_internal_silence_seconds", "clipping_peak_db", "protected_terms"],
+      "properties": {
+        "qa_version": {"type": "integer", "minimum": 1},
+        "stt_provider": {"type": "string", "minLength": 1},
+        "stt_model": {"type": ["string", "null"]},
+        "language": {"type": ["string", "null"]},
+        "max_word_error_rate": {"type": ["number", "null"], "minimum": 0},
+        "max_character_error_rate": {"type": ["number", "null"], "minimum": 0},
+        "max_internal_silence_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "clipping_peak_db": {"type": "number"},
+        "protected_terms": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "book": {"type": "object"},
+    "expected_tracks": {"type": "integer", "minimum": 1},
+    "validated_tracks": {"type": "integer", "minimum": 0},
     "failures": {"type": "array", "items": {"type": "string"}},
     "warnings": {"type": "array", "items": {"type": "string"}},
-    "tracks": {"type": "array"}
+    "transcription": {"type": ["object", "null"]},
+    "tracks": {"type": "array", "items": {"$ref": "#/$defs/track"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codec", "sample_rate", "bit_rate", "channels", "duration_seconds", "bytes", "sha256"],
+      "properties": {
+        "codec": {"type": "string", "minLength": 1},
+        "sample_rate": {"type": "integer", "minimum": 1},
+        "bit_rate": {"type": ["integer", "null"], "minimum": 1},
+        "channels": {"type": "integer", "minimum": 1},
+        "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["track_number", "title", "audio_file", "audio_sha256", "assembly_sha256", "duration_seconds", "media", "signal", "transcription", "warnings"],
+      "properties": {
+        "track_number": {"type": "integer", "minimum": 1},
+        "title": {"type": "string", "minLength": 1},
+        "audio_file": {"type": "string", "pattern": "^[0-9]{3}_[A-Za-z0-9][A-Za-z0-9_-]*\\.mp3$"},
+        "audio_sha256": {"$ref": "#/$defs/sha256"},
+        "assembly_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "media": {"$ref": "#/$defs/media"},
+        "signal": {"type": "object"},
+        "transcription": {"type": ["object", "null"]},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    }
   }
 }

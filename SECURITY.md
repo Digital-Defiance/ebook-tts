@@ -8,9 +8,11 @@ Until 1.0, only the latest released minor version receives security fixes.
 
 Do not open a public issue for vulnerabilities involving archive traversal,
 secret disclosure, command execution, symlink/TOCTOU writes, provider billing,
-or checkpoint bypass. Use the repository host's private security-advisory flow.
-If that is unavailable, contact the maintainer through the address published on
-the package/repository profile.
+or checkpoint bypass. Submit a private report through the repository's
+[security advisory form](https://github.com/Digital-Defiance/ebook-tts/security/advisories/new).
+If private vulnerability reporting is unavailable, contact the maintainer
+through a monitored address published on the repository profile rather than
+posting exploit details publicly.
 
 Include a minimal synthetic reproduction. Never attach a private EPUB, API key,
 provider response, production transcript, or generated commercial audiobook.

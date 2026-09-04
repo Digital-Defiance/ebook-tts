@@ -1,42 +1,47 @@
 # Maintainer release procedure
 
-1. Confirm the proposed package name is available and update project URLs in
-   `pyproject.toml` when the public repository exists.
-2. Review dependency pins and provider/API documentation.
-3. Run the complete local gate:
+1. Confirm the `ebook-tts` package name and the public repository URLs in
+   `pyproject.toml`. Verify that GitHub private vulnerability reporting is
+   enabled for `Digital-Defiance/ebook-tts`.
+2. Review dependency pins, provider/API documentation, version, and release tag.
+3. Run the complete local gate without provider calls:
 
    ```bash
-   uv lock
-   uv sync --all-extras
-   uv run pytest
-   uv run python -m compileall -q src
+   UV_OFFLINE=1 uv lock --check
+   UV_OFFLINE=1 uv sync --all-extras
+   UV_OFFLINE=1 uv run pytest
+   UV_OFFLINE=1 uv run python -m compileall -q src tests
    uv build
    ```
 
-4. Install the wheel, not the source tree, in a clean environment and run:
+4. Install the wheel and sdist independently—not the source tree—into separate
+   clean environments. For each installation, run:
 
    ```bash
    ebook-tts --version
    ebook-tts --help
-   ebook-tts inspect tests/fixtures/example.epub  # when a fixture is published
+   python -c "from importlib.resources import files; assert (files('ebook_tts') / 'schemas' / 'plan-v1.schema.json').is_file()"
    ```
 
-   The automated suite generates its EPUB fixture dynamically; maintainers may
-   use any explicitly public-domain EPUB for this manual check.
-5. Run a private live smoke request only with a dedicated low-cost account and
+   Also import `ebook_tts.workspace.request_identity` to catch missing package
+   modules. Do not use an unpublished fixture path in this smoke test.
+5. Inspect wheel and sdist member lists. Confirm that both contain the license,
+   schemas, and all runtime modules, and contain no `.epub`, audio, workspace,
+   quarantine, dotenv, config, or private provenance files.
+6. Run a private live smoke request only with a dedicated low-cost account and
    explicit authorization. Public CI never does this.
-6. Run the full workflow on a public-domain book and inspect both archives in
-   their target applications.
-7. Run the same code against private production regression material. Never add
-   copyrighted text/audio or API credentials to this repository or CI logs.
-8. Update `CHANGELOG.md`, version in `pyproject.toml`, and package schemas/docs.
-9. Build and inspect wheel/sdist contents. Confirm no `.epub`, audio, workspace,
-   quarantine, or environment files are included.
-10. Create a signed version tag and GitHub release. The release workflow builds,
-    tests, uploads artifacts, and can publish through the protected `pypi`
-    environment using Trusted Publishing.
-11. Verify the PyPI metadata and install the published wheel in another clean
-    environment.
+7. Run the workflow on a public-domain book and inspect all selected outputs in
+   their target applications. Keep private production regression material out
+   of the repository and CI logs.
+8. Update `CHANGELOG.md`, version, schemas, and documentation. Review the staged
+   diff and secret/privacy scan before creating a commit or tag.
+9. Create a signed version tag and GitHub release. The release job tests source,
+   builds once, clean-installs and smoke-tests both wheel and sdist, then uploads
+   those exact artifacts. PyPI publication uses the protected `pypi` environment
+   and Trusted Publishing.
+10. Verify PyPI metadata and project links, download both published distribution
+    files, compare them with the release artifacts, and install each in another
+    clean environment.
 
 ## Versioning
 

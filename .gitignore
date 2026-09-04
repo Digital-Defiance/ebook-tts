@@ -17,3 +17,10 @@ dist/
 *.zip
 work/
 output/
+
+# Default local configuration, secrets, and generated workspaces
+.env
+.env.*
+!.env.example
+audiobook.toml
+*.ebook-tts/

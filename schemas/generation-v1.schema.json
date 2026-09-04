@@ -1,14 +1,139 @@
 {
   "title": "ebook-tts generation run v1",
   "type": "object",
-  "required": ["manifest_version", "kind", "run_id", "plan_sha256", "status", "generation", "sections"],
+  "additionalProperties": false,
+  "required": [
+    "manifest_version", "kind", "run_id", "plan_sha256", "status",
+    "created_at", "updated_at", "generation", "track_count", "sections"
+  ],
   "properties": {
     "manifest_version": {"const": 1},
     "kind": {"const": "ebook-tts-generation"},
-    "run_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "run_id": {"$ref": "#/$defs/sha256"},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
     "status": {"enum": ["in_progress", "partial", "complete"]},
-    "generation": {"type": "object"},
-    "sections": {"type": "object"}
+    "created_at": {"type": "string", "minLength": 1},
+    "updated_at": {"type": "string", "minLength": 1},
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "provider_sdk_version", "voice_id", "model_id", "output_format", "context_characters", "voice_settings"],
+      "properties": {
+        "provider": {"type": "string", "minLength": 1},
+        "provider_sdk_version": {"type": "string", "minLength": 1},
+        "voice_id": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "output_format": {"type": "string", "minLength": 1},
+        "context_characters": {"type": "integer", "minimum": 0},
+        "voice_settings": {"type": "object"},
+        "assembly": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policy_version", "checkpoint_version", "id3v2_version", "genre"],
+          "properties": {
+            "policy_version": {"type": "integer", "minimum": 1},
+            "checkpoint_version": {"type": "integer", "minimum": 1},
+            "id3v2_version": {"const": 3},
+            "genre": {"type": "string"}
+          }
+        }
+      }
+    },
+    "track_count": {"type": "integer", "minimum": 1},
+    "completed_tracks": {"type": "integer", "minimum": 0},
+    "sections": {
+      "type": "object",
+      "patternProperties": {"^[1-9][0-9]*$": {"$ref": "#/$defs/section"}},
+      "additionalProperties": false
+    },
+    "adopted": {"type": "boolean"},
+    "verification_only": {"type": "boolean"},
+    "adoption": {"type": "object"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codec", "sample_rate", "bit_rate", "channels", "duration_seconds", "bytes", "sha256"],
+      "properties": {
+        "codec": {"type": "string", "minLength": 1},
+        "sample_rate": {"type": "integer", "minimum": 1},
+        "bit_rate": {"type": ["integer", "null"], "minimum": 1},
+        "channels": {"type": "integer", "minimum": 1},
+        "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_version", "kind", "request_sha256", "text_sha256", "audio_file", "audio_sha256", "provider_request_id", "billed_characters", "media"],
+      "properties": {
+        "manifest_version": {"const": 1},
+        "kind": {"const": "ebook-tts-chunk"},
+        "request_sha256": {"$ref": "#/$defs/sha256"},
+        "text_sha256": {"$ref": "#/$defs/sha256"},
+        "audio_file": {"type": "string", "pattern": "^chunk_[0-9]{4}_[0-9a-f]{64}\\.mp3$"},
+        "audio_sha256": {"$ref": "#/$defs/sha256"},
+        "provider_request_id": {"type": ["string", "null"]},
+        "billed_characters": {"type": ["integer", "null"], "minimum": 0},
+        "media": {"$ref": "#/$defs/media"},
+        "recovered_after_interruption": {"type": "boolean"},
+        "adopted": {"type": "boolean"}
+      }
+    },
+    "assembly": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checkpoint_version", "policy_version", "plan_sha256", "run_id", "section_sha256", "track_number", "output_file", "output_format", "inputs", "metadata", "cover"],
+      "properties": {
+        "checkpoint_version": {"type": "integer", "minimum": 1},
+        "policy_version": {"type": "integer", "minimum": 1},
+        "plan_sha256": {"$ref": "#/$defs/sha256"},
+        "run_id": {"$ref": "#/$defs/sha256"},
+        "section_sha256": {"$ref": "#/$defs/sha256"},
+        "track_number": {"type": "integer", "minimum": 1},
+        "output_file": {"type": "string", "pattern": "^[0-9]{3}_[A-Za-z0-9][A-Za-z0-9_-]*\\.mp3$"},
+        "output_format": {"type": "string", "minLength": 1},
+        "inputs": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        "metadata": {"type": "object"},
+        "cover": {"type": ["object", "null"]}
+      }
+    },
+    "final": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "codec", "sample_rate", "bit_rate", "channels", "duration_seconds", "bytes", "sha256"],
+      "properties": {
+        "file": {"type": "string", "pattern": "^[0-9]{3}_[A-Za-z0-9][A-Za-z0-9_-]*\\.mp3$"},
+        "codec": {"type": "string", "minLength": 1},
+        "sample_rate": {"type": "integer", "minimum": 1},
+        "bit_rate": {"type": ["integer", "null"], "minimum": 1},
+        "channels": {"type": "integer", "minimum": 1},
+        "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "checkpoint_version": {"type": "integer", "minimum": 1},
+        "assembly": {"$ref": "#/$defs/assembly"},
+        "assembly_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["track_number", "title", "output_stem", "status", "chunks", "completed_chunks"],
+      "properties": {
+        "track_number": {"type": "integer", "minimum": 1},
+        "title": {"type": "string", "minLength": 1},
+        "output_stem": {"type": "string", "pattern": "^[0-9]{3}_[A-Za-z0-9][A-Za-z0-9_-]*$"},
+        "status": {"enum": ["in_progress", "complete"]},
+        "chunks": {"type": "array", "items": {"$ref": "#/$defs/chunk"}},
+        "completed_chunks": {"type": "integer", "minimum": 0},
+        "final_audio": {"$ref": "#/$defs/final"},
+        "adopted": {"type": "boolean"}
+      }
+    }
   }
 }

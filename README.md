@@ -19,13 +19,19 @@ BookPlayer-compatible and generic distribution archives.
 - Paragraph/sentence-aware chunks with token-conservation checks
 - Model profiles: Multilingual v2 defaults to 9,500 of its documented 10,000
   API characters
-- Immutable plans and content-addressed generation runs
+- Immutable plans whose referenced text, chunks, and cover are re-verified before
+  paid work; generation runs retain stable paid-request identities
 - Offline legacy-v1 adoption with verified byte-for-byte audio preservation
-- Durable pre-request markers and no automatic retries after ambiguous paid calls
-- Complete audio decode, format, duration, hash, loudness, peak, and silence QA
+- Durable pre-request markers and locked, transactional retry authorization after
+  ambiguous paid calls
+- Native final-assembly receipts bind exact ordered chunks, output settings,
+  metadata intent, and cover identity; uncheckpointed finals are never adopted
+- Complete audio decode, format, duration, hash, loudness, peak, and silence QA,
+  with each report bound to the exact canonical run and audio state
 - Optional timestamped ElevenLabs Scribe transcription with WER/CER, long-change
   spans, and protected-term review
-- Flat BookPlayer ZIP, generic archive ZIP, and extracted track-directory outputs
+- Content-derived BookPlayer ZIP, generic archive ZIP, and extracted track
+  outputs with deep verification before existing artifacts are reused
 - No network or paid provider calls in the normal test suite
 
 ## Requirements
@@ -225,5 +231,10 @@ responsible for book, cover, voice, and generated-audio rights and for the
 provider's current terms and retention settings. API keys are read from the
 environment and are never written to manifests.
 
-Licensed under the MIT License. BookPlayer and ElevenLabs are third-party names and
-are not affiliated with this project.
+Git ignores the default `audiobook.toml`, dotenv files, `*.ebook-tts/`
+workspaces, and `work/` tree. Custom config filenames, custom workspace paths,
+and output locations are not automatically protected; add them to your own
+ignore rules and inspect staged files before every public commit.
+
+Licensed under the MIT License. BookPlayer and ElevenLabs are third-party names
+and are not affiliated with this project.
