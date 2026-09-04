@@ -148,6 +148,27 @@ def _quality(value: _NativeFixture, media_tools):
   )
 
 
+def test_workspace_lock_releases_and_reacquires_nonempty_file(
+    tmp_path: Path,
+) -> None:
+  workspace = tmp_path / "workspace"
+  workspace.mkdir()
+  lock_path = workspace / ".lock"
+  lock_path.write_bytes(b"stale-lock-owner\n" * 1_024)
+
+  for _ in range(3):
+    with WorkspaceLock(workspace):
+      pass
+    assert lock_path.read_text(encoding="utf-8").startswith("pid=")
+
+  with pytest.raises(RuntimeError, match="sentinel body failure"):
+    with WorkspaceLock(workspace):
+      raise RuntimeError("sentinel body failure")
+
+  with WorkspaceLock(workspace):
+    pass
+
+
 def test_paid_generation_rejects_tampered_plan_text_before_provider_call(
     epub_factory,
     tmp_path: Path,
