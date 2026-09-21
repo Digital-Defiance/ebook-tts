@@ -12,14 +12,22 @@ from typing import Any, Mapping
 
 from .errors import ConfigError
 from .models import (
+    DEFAULT_NARRATION_INSTRUCT,
     MODEL_PROFILES,
+    AccessibilityConfig,
     AppConfig,
     AudioConfig,
     BookMetadata,
     BookOverrides,
+    LocalAudioPatch,
+    LocalTrackOverride,
+    LocalTTSConfig,
+    ManuscriptConfig,
     NormalizationRule,
+    ProjectConfig,
     QAConfig,
     SectionConfig,
+    SpokenReplaceRule,
     TTSConfig,
 )
 from .utils import atomic_write_text
@@ -118,7 +126,17 @@ def load_config(path: Path | None) -> AppConfig:
   except tomllib.TOMLDecodeError as exc:
     raise ConfigError(f"Invalid TOML in {path}: {exc}") from exc
 
-  allowed_root = {"book", "sections", "tts", "audio", "qa", "normalization"}
+  allowed_root = {
+      "book",
+      "sections",
+      "tts",
+      "audio",
+      "qa",
+      "normalization",
+      "project",
+      "manuscript",
+      "accessibility",
+  }
   unknown_root = sorted(set(data).difference(allowed_root))
   if unknown_root:
     raise ConfigError(f"Unknown top-level setting(s): {', '.join(unknown_root)}")
@@ -163,6 +181,7 @@ def load_config(path: Path | None) -> AppConfig:
           "max_characters",
           "context_characters",
           "voice_settings",
+          "local",
       },
       "tts",
   )
@@ -187,8 +206,11 @@ def load_config(path: Path | None) -> AppConfig:
         "tts.output_format must resemble mp3_44100_128 or pcm_44100_16."
     )
   settings = _table(tts_data.get("voice_settings"), "tts.voice_settings")
+  provider = str(tts_data.get("provider", defaults.tts.provider)).strip()
+  if provider not in {"elevenlabs", "local"}:
+    raise ConfigError('tts.provider must be "elevenlabs" or "local".')
   tts = TTSConfig(
-      provider=str(tts_data.get("provider", defaults.tts.provider)).strip(),
+      provider=provider,
       voice_id=str(tts_data.get("voice_id", defaults.tts.voice_id)).strip(),
       model_id=model_id,
       output_format=output_format,
@@ -199,6 +221,7 @@ def load_config(path: Path | None) -> AppConfig:
           "tts.context_characters",
       ),
       voice_settings=dict(settings),
+      local=_load_local_tts(tts_data.get("local"), path.parent if path else None),
   )
 
   audio_data = _table(data.get("audio"), "audio")
@@ -223,11 +246,15 @@ def load_config(path: Path | None) -> AppConfig:
           "max_internal_silence_seconds",
           "clipping_peak_db",
           "protected_terms",
+          "spoken_gate",
       },
       "qa",
   )
+  stt_provider = str(qa_data.get("stt_provider", defaults.qa.stt_provider)).strip()
+  if stt_provider not in {"none", "elevenlabs", "local"}:
+    raise ConfigError('qa.stt_provider must be "none", "elevenlabs", or "local".')
   qa = QAConfig(
-      stt_provider=str(qa_data.get("stt_provider", defaults.qa.stt_provider)).strip(),
+      stt_provider=stt_provider,
       stt_model=str(qa_data.get("stt_model", defaults.qa.stt_model)).strip(),
       language=_optional_string(qa_data.get("language"), "qa.language"),
       max_word_error_rate=_optional_rate(
@@ -247,6 +274,7 @@ def load_config(path: Path | None) -> AppConfig:
           "qa.clipping_peak_db",
       ),
       protected_terms=_strings(qa_data.get("protected_terms"), "qa.protected_terms"),
+      spoken_gate=_bool(qa_data.get("spoken_gate"), False, "qa.spoken_gate"),
   )
 
   raw_rules = data.get("normalization", [])
@@ -282,15 +310,374 @@ def load_config(path: Path | None) -> AppConfig:
       tts=tts,
       audio=audio,
       qa=qa,
+      project=_load_project(data.get("project")),
+      manuscript=_load_manuscript(data.get("manuscript")),
+      accessibility=_load_accessibility(data.get("accessibility")),
   )
 
 
-def write_config_template(path: Path, metadata: BookMetadata) -> None:
+def _resolve_relative(value: str, base: Path | None) -> str:
+  if not value or Path(value).is_absolute() or base is None:
+    return value
+  return str((base / value).expanduser())
+
+
+def _load_local_tts(raw: Any, config_dir: Path | None) -> LocalTTSConfig:
+  data = _table(raw, "tts.local")
+  _only(
+      data,
+      {
+          "reference_wav",
+          "reference_text",
+          "instruct",
+          "seed",
+          "anchor",
+          "sentence_pause",
+          "sentence_turns",
+          "chunk_length",
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "top_k",
+          "segment_gap_ms",
+          "verbalize_numerals",
+          "numeral_style",
+          "max_words_per_call",
+          "tracks",
+      },
+      "tts.local",
+    )
+  seed_value = data.get("seed")
+  if seed_value is None:
+    seed: int | None = 70
+  elif isinstance(seed_value, int) and not isinstance(seed_value, bool):
+    seed = seed_value
+  else:
+    raise ConfigError("tts.local.seed must be an integer or omitted.")
+  pause = str(data.get("sentence_pause", "short")).strip()
+  if pause not in {"none", "short", "full"}:
+    raise ConfigError('tts.local.sentence_pause must be "none", "short", or "full".')
+  style = str(data.get("numeral_style", "plain")).strip()
+  if style not in {"plain", "radio"}:
+    raise ConfigError('tts.local.numeral_style must be "plain" or "radio".')
+  instruct = data.get("instruct")
+  return LocalTTSConfig(
+      reference_wav=_resolve_relative(
+          str(data.get("reference_wav", "")).strip(), config_dir
+      ),
+      reference_text=_resolve_relative(
+          str(data.get("reference_text", "")).strip(), config_dir
+      ),
+      instruct=(
+          instruct.strip()
+          if isinstance(instruct, str) and instruct.strip()
+          else DEFAULT_NARRATION_INSTRUCT
+      ),
+      seed=seed,
+      anchor=_bool(data.get("anchor"), True, "tts.local.anchor"),
+      sentence_pause=pause,
+      sentence_turns=_bool(
+          data.get("sentence_turns"), False, "tts.local.sentence_turns"
+      ),
+      chunk_length=_integer(
+          data.get("chunk_length"), 300, "tts.local.chunk_length", 32
+      ),
+      max_tokens=_integer(data.get("max_tokens"), 1024, "tts.local.max_tokens", 1),
+      temperature=_number(data.get("temperature"), 0.7, "tts.local.temperature"),
+      top_p=_number(data.get("top_p"), 0.7, "tts.local.top_p"),
+      top_k=_integer(data.get("top_k"), 30, "tts.local.top_k", 1),
+      segment_gap_ms=_number(
+          data.get("segment_gap_ms"), 650.0, "tts.local.segment_gap_ms"
+      ),
+      verbalize_numerals=_bool(
+          data.get("verbalize_numerals"), True, "tts.local.verbalize_numerals"
+      ),
+      numeral_style=style,
+      max_words_per_call=_integer(
+          data.get("max_words_per_call"),
+          0,
+          "tts.local.max_words_per_call",
+          0,
+      ),
+      tracks=_load_local_tracks(data.get("tracks"), config_dir),
+  )
+
+
+def _load_local_tracks(raw: Any, config_dir: Path | None) -> tuple[LocalTrackOverride, ...]:
+  if raw is None:
+    return ()
+  if not isinstance(raw, list):
+    raise ConfigError("tts.local.tracks must be an array of tables.")
+  tracks: list[LocalTrackOverride] = []
+  for index, item in enumerate(raw):
+    label = f"tts.local.tracks[{index}]"
+    data = _table(item, label)
+    _only(
+        data,
+        {
+            "chapter",
+            "track",
+            "max_words_per_call",
+            "spoken_replace",
+            "patches",
+        },
+        label,
+    )
+    chapter = data.get("chapter")
+    track = data.get("track")
+    if chapter is None and track is None:
+      raise ConfigError(f"{label} requires chapter and/or track.")
+    if chapter is not None and (
+        not isinstance(chapter, int) or isinstance(chapter, bool) or chapter < 1
+    ):
+      raise ConfigError(f"{label}.chapter must be a positive integer.")
+    if track is not None and (
+        not isinstance(track, int) or isinstance(track, bool) or track < 1
+    ):
+      raise ConfigError(f"{label}.track must be a positive integer.")
+    max_words = data.get("max_words_per_call")
+    if max_words is not None and (
+        not isinstance(max_words, int) or isinstance(max_words, bool) or max_words < 0
+    ):
+      raise ConfigError(f"{label}.max_words_per_call must be a non-negative integer.")
+    tracks.append(
+        LocalTrackOverride(
+            chapter=chapter,
+            track=track,
+            max_words_per_call=max_words,
+            spoken_replace=_load_spoken_replace(
+                data.get("spoken_replace"), f"{label}.spoken_replace"
+            ),
+            patches=_load_local_patches(
+                data.get("patches"), f"{label}.patches", config_dir
+            ),
+        )
+    )
+  return tuple(tracks)
+
+
+def _load_spoken_replace(raw: Any, label: str) -> tuple[SpokenReplaceRule, ...]:
+  if raw is None:
+    return ()
+  if not isinstance(raw, list):
+    raise ConfigError(f"{label} must be an array of tables.")
+  rules: list[SpokenReplaceRule] = []
+  for index, item in enumerate(raw):
+    entry = f"{label}[{index}]"
+    data = _table(item, entry)
+    _only(data, {"from", "to"}, entry)
+    old = data.get("from")
+    new = data.get("to")
+    if not isinstance(old, str) or not old:
+      raise ConfigError(f"{entry}.from must be a non-empty string.")
+    if not isinstance(new, str):
+      raise ConfigError(f"{entry}.to must be a string.")
+    rules.append(SpokenReplaceRule(old=old, new=new))
+  return tuple(rules)
+
+
+def _load_local_patches(
+    raw: Any, label: str, config_dir: Path | None
+) -> tuple[LocalAudioPatch, ...]:
+  if raw is None:
+    return ()
+  if not isinstance(raw, list):
+    raise ConfigError(f"{label} must be an array of tables.")
+  patches: list[LocalAudioPatch] = []
+  for index, item in enumerate(raw):
+    entry = f"{label}[{index}]"
+    data = _table(item, entry)
+    _only(
+        data,
+        {
+            "phrase",
+            "start",
+            "end",
+            "replace_unintelligible",
+            "allow_duration_change",
+            "announcement_text",
+        },
+        entry,
+    )
+    phrase = data.get("phrase")
+    if not isinstance(phrase, str) or not phrase.strip():
+      raise ConfigError(f"{entry}.phrase must be a non-empty path string.")
+    start = data.get("start")
+    end = data.get("end")
+    if not isinstance(start, (int, float)) or isinstance(start, bool):
+      raise ConfigError(f"{entry}.start must be a number of seconds.")
+    if not isinstance(end, (int, float)) or isinstance(end, bool):
+      raise ConfigError(f"{entry}.end must be a number of seconds.")
+    if float(end) <= float(start):
+      raise ConfigError(f"{entry}.end must be greater than start.")
+    announcement = data.get("announcement_text")
+    if announcement is not None and not isinstance(announcement, str):
+      raise ConfigError(f"{entry}.announcement_text must be a string.")
+    patches.append(
+        LocalAudioPatch(
+            phrase=_resolve_relative(phrase.strip(), config_dir),
+            start=float(start),
+            end=float(end),
+            replace_unintelligible=_bool(
+                data.get("replace_unintelligible"),
+                True,
+                f"{entry}.replace_unintelligible",
+            ),
+            allow_duration_change=_bool(
+                data.get("allow_duration_change"),
+                False,
+                f"{entry}.allow_duration_change",
+            ),
+            announcement_text=announcement.strip() if isinstance(announcement, str) else None,
+        )
+    )
+  return tuple(patches)
+
+
+def _load_project(raw: Any) -> ProjectConfig:
+  data = _table(raw, "project")
+  _only(data, {"source"}, "project")
+  source = str(data.get("source", "epub")).strip()
+  if source not in {"epub", "manuscript"}:
+    raise ConfigError('project.source must be "epub" or "manuscript".')
+  return ProjectConfig(source=source)
+
+
+def _load_manuscript(raw: Any) -> ManuscriptConfig:
+  data = _table(raw, "manuscript")
+  _only(
+      data,
+      {
+          "root",
+          "chapters",
+          "front_matter",
+          "back_matter",
+          "required_header_keys",
+          "extra_header_keys",
+          "epub",
+      },
+      "manuscript",
+  )
+  keys = _strings(data.get("required_header_keys"), "manuscript.required_header_keys")
+  return ManuscriptConfig(
+      root=str(data.get("root", "manuscript")).strip() or "manuscript",
+      chapters=str(data.get("chapters", "chapters")).strip() or "chapters",
+      front_matter=str(data.get("front_matter", "front-matter.md")).strip(),
+      back_matter=str(data.get("back_matter", "back-matter.md")).strip(),
+      required_header_keys=keys or ("chapter", "title", "words", "status"),
+      extra_header_keys=_bool(
+          data.get("extra_header_keys"), True, "manuscript.extra_header_keys"
+      ),
+      epub=str(data.get("epub", "book/dist/book.epub")).strip() or "book/dist/book.epub",
+  )
+
+
+def _load_accessibility(raw: Any) -> AccessibilityConfig:
+  data = _table(raw, "accessibility")
+  _only(data, {"certified_by", "cover_alt", "summary"}, "accessibility")
+  return AccessibilityConfig(
+      certified_by=str(data.get("certified_by", "")).strip(),
+      cover_alt=str(data.get("cover_alt", "")).strip(),
+      summary=str(data.get("summary", "")).strip(),
+  )
+
+
+def write_config_template(
+    path: Path,
+    metadata: BookMetadata,
+    *,
+    source: str = "epub",
+    manuscript_root: str = "manuscript",
+) -> None:
   """Write a documented, editable config without including any API secret."""
   title = json.dumps(metadata.title, ensure_ascii=False)
   authors = ", ".join(json.dumps(author, ensure_ascii=False) for author in metadata.authors)
   language = json.dumps(metadata.language or "", ensure_ascii=False)
-  template = f'''# Generated by ebook-tts init. API keys belong in the environment.
+  if source == "manuscript":
+    template = f'''# Generated by ebook-tts init --manuscript. The markdown tree is the
+# source of truth; EPUB and audio are derived editions.
+
+[project]
+source = "manuscript"
+
+[book]
+title = {title}
+authors = [{authors}]
+language = {language}
+
+[manuscript]
+root = {json.dumps(manuscript_root, ensure_ascii=False)}
+chapters = "chapters"
+front_matter = "front-matter.md"
+back_matter = "back-matter.md"
+epub = "book/dist/book.epub"
+extra_header_keys = true
+
+[accessibility]
+certified_by = ""
+cover_alt = ""
+summary = ""
+
+[sections]
+announce_titles = true
+minimum_characters = 1
+
+[tts]
+provider = "local"
+voice_id = "narrator"
+model_id = "mlx-community/fish-audio-s2-pro"
+output_format = "mp3_44100_128"
+max_characters = 200000
+context_characters = 0
+
+[tts.local]
+reference_wav = "voices/narrator.wav"
+reference_text = "voices/narrator.txt"
+anchor = true
+sentence_pause = "short"
+verbalize_numerals = true
+# Book-wide default. Prefer per-chapter exceptions under [[tts.local.tracks]]
+# when only a few long chapters need the long-context split.
+# max_words_per_call = 0
+
+# Working-config exceptions for this book only (not tool defaults):
+# [[tts.local.tracks]]
+# chapter = 13
+# max_words_per_call = 1100
+#
+# [[tts.local.tracks]]
+# chapter = 15
+# spoken_replace = [
+#   {{ from = "*Open Channel working group*, lower case, in a footnote", to = "Open-Channel working group, lower-case, in a footnote" }},
+# ]
+# patches = [
+#   {{ phrase = "patches/ch015.wav", start = 25.32, end = 28.88, replace_unintelligible = true }},
+# ]
+
+[audio]
+ffmpeg = "ffmpeg"
+ffprobe = "ffprobe"
+genre = "Audiobook"
+
+[qa]
+stt_provider = "local"
+stt_model = "mlx-community/whisper-large-v3-turbo"
+language = "en"
+spoken_gate = true
+max_internal_silence_seconds = 8.0
+clipping_peak_db = -0.1
+protected_terms = []
+
+# [[normalization]]
+# pattern = "source spelling"
+# replacement = "spoken spelling"
+# expected_count = 1
+'''
+  else:
+    template = f'''# Generated by ebook-tts init. API keys belong in the environment.
+
+[project]
+source = "epub"
 
 [book]
 title = {title}
@@ -319,15 +706,25 @@ context_characters = 500
 # stability = 0.5
 # similarity_boost = 0.75
 
+# Local Apple Silicon rendering instead of ElevenLabs:
+# provider = "local"
+# voice_id = "narrator"
+# model_id = "mlx-community/fish-audio-s2-pro"
+# max_characters = 200000
+# [tts.local]
+# reference_wav = "voices/narrator.wav"
+# reference_text = "voices/narrator.txt"
+
 [audio]
 ffmpeg = "ffmpeg"
 ffprobe = "ffprobe"
 genre = "Audiobook"
 
 [qa]
-stt_provider = "none" # use "elevenlabs" to enable Scribe validation
+stt_provider = "none" # "elevenlabs" (Scribe) or "local" (Whisper)
 stt_model = "scribe_v2"
 language = ""
+spoken_gate = false
 max_internal_silence_seconds = 8.0
 clipping_peak_db = -0.1
 protected_terms = []

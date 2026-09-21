@@ -5,6 +5,26 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Manuscript authoring mode: restricted chapter headers, objective word-count
+  checks, EPUB extract/compile, Accessibility 1.1 post-processing, and git
+  lifecycle hooks that replace Kiro save/stop/prompt bindings
+- Local Fish S2 Pro provider with spoken-numeral transforms, session-turn
+  planning, retryable (non-billed) failures, and optional Whisper QA
+- Chaptered M4B packaging from validated MP3 tracks (AAC remux with
+  ffmetadata chapters; second lossy encode, convenience distribution)
+- Opt-in live Fish + Whisper smoke (`pytest -m live`) that verifies voice-anchor
+  discard and spoken-gate WER against real on-device audio
+- `tts.local.max_words_per_call` for long-context Fish recovery: split a chapter
+  into re-anchored generate() calls (~1100 words) without changing the manuscript
+- Per-book `[[tts.local.tracks]]` working-config exceptions: chapter/track
+  `max_words_per_call`, generation-only `spoken_replace`, and verified audio
+  `patches` (PCM splice library) hashed into request identity
+- `ebook-tts diagnose find|seam|formats`: turn spoken-gate failures into named
+  omission reports, re-check splice windows with Whisper, and confirm
+  WAV/MP3/M4B durations agree before shipping a repair
+
 ## [0.1.0] - 2026-09-04
 
 ### Added

@@ -70,7 +70,17 @@ hashes; a checksum file alone is not trusted.
 
 ## M4B
 
-M4B is not part of v1. Converting provider MP3 to M4B requires MP3→AAC
-transcoding and another lossy encode. A future backend should preferably request
-or retain a lossless intermediate and create chapter metadata in one controlled
-encode.
+```text
+book-title-PACKAGEID.m4b
+```
+
+A single chaptered audiobook file built from the validated MP3 tracks. Chapters
+follow track order and titles. Cover art is embedded when the plan has one.
+
+This is a second lossy encode (MP3→AAC). Prefer the MP3 track packages as the
+archival/master outputs; use M4B as a convenience distribution for players that
+expect one file with chapter markers.
+
+```bash
+ebook-tts package WORKSPACE --format m4b --format bookplayer
+```

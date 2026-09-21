@@ -13,14 +13,31 @@ NORMALIZATION_VERSION = 1
 CHUNKER_VERSION = 3
 
 
+DEFAULT_NARRATION_INSTRUCT = (
+    "Read clearly and unhurriedly for a listener who cannot see the page. "
+    "Let meaning land through timing and emphasis rather than volume. Never "
+    "announce layout, skip, or paraphrase."
+)
+
+DEFAULT_VOICE_ANCHOR = (
+    "Before the chapter begins, I settle into the same chair and place the "
+    "notebook squarely on the desk. I take one ordinary breath and read this "
+    "line in the voice I use for facts that matter: calm, exact, unhurried, "
+    "and close enough to hear the thought behind the words. I do not announce, "
+    "perform, or hurry. I let each sentence finish, leave the silence where it "
+    "belongs, and begin the next one only when it is ready."
+)
+
+
 @dataclass(frozen=True)
 class ModelProfile:
-  """Known API constraints and safe defaults for one TTS model."""
+  """Known constraints and safe defaults for one TTS model."""
 
   model_id: str
   maximum_characters: int
   default_chunk_characters: int
   supports_text_context: bool = True
+  billed: bool = True
 
 
 MODEL_PROFILES: Mapping[str, ModelProfile] = {
@@ -54,6 +71,13 @@ MODEL_PROFILES: Mapping[str, ModelProfile] = {
         model_id="eleven_turbo_v2",
         maximum_characters=30_000,
         default_chunk_characters=29_000,
+    ),
+    "mlx-community/fish-audio-s2-pro": ModelProfile(
+        model_id="mlx-community/fish-audio-s2-pro",
+        maximum_characters=200_000,
+        default_chunk_characters=200_000,
+        supports_text_context=False,
+        billed=False,
     ),
 }
 
@@ -135,6 +159,66 @@ class SectionConfig:
 
 
 @dataclass(frozen=True)
+class SpokenReplaceRule:
+  """Generation-only exact string swap; manuscript and ASR reference stay unchanged."""
+
+  old: str
+  new: str
+
+
+@dataclass(frozen=True)
+class LocalAudioPatch:
+  """Verified phrase splice for a Fish omission or unintelligible span."""
+
+  phrase: str
+  start: float
+  end: float
+  replace_unintelligible: bool = True
+  allow_duration_change: bool = False
+  announcement_text: str | None = None
+
+
+@dataclass(frozen=True)
+class LocalTrackOverride:
+  """Book-local recovery for one manuscript chapter and/or plan track."""
+
+  chapter: int | None = None
+  track: int | None = None
+  max_words_per_call: int | None = None
+  spoken_replace: tuple[SpokenReplaceRule, ...] = ()
+  patches: tuple[LocalAudioPatch, ...] = ()
+
+
+@dataclass(frozen=True)
+class LocalTTSConfig:
+  """Session-engine settings for on-device narration."""
+
+  reference_wav: str = ""
+  reference_text: str = ""
+  instruct: str = DEFAULT_NARRATION_INSTRUCT
+  seed: int | None = 70
+  anchor: bool = True
+  sentence_pause: str = "short"
+  sentence_turns: bool = False
+  chunk_length: int = 300
+  max_tokens: int = 1024
+  temperature: float = 0.7
+  top_p: float = 0.7
+  top_k: int = 30
+  segment_gap_ms: float = 650.0
+  verbalize_numerals: bool = True
+  numeral_style: str = "plain"
+  # Split long chapters into separate deterministic generate() calls at paragraph
+  # boundaries, each re-anchored with the same seed. 0 keeps a single call (the
+  # approved short-chapter behavior). 1100 is the long-context recovery used when
+  # a ~2000-word chapter otherwise truncates or refuses tokens mid-prose.
+  max_words_per_call: int = 0
+  # Per-book working exceptions keyed by chapter and/or track number. Empty means
+  # every track uses the book-wide defaults above.
+  tracks: tuple[LocalTrackOverride, ...] = ()
+
+
+@dataclass(frozen=True)
 class TTSConfig:
   """Text-to-speech generation settings."""
 
@@ -145,6 +229,7 @@ class TTSConfig:
   max_characters: int = 9_500
   context_characters: int = 500
   voice_settings: Mapping[str, Any] = field(default_factory=dict)
+  local: LocalTTSConfig = field(default_factory=LocalTTSConfig)
 
 
 @dataclass(frozen=True)
@@ -168,6 +253,36 @@ class QAConfig:
   max_internal_silence_seconds: float = 8.0
   clipping_peak_db: float = -0.1
   protected_terms: tuple[str, ...] = ()
+  spoken_gate: bool = False
+
+
+@dataclass(frozen=True)
+class ProjectConfig:
+  """Whether the EPUB or a markdown manuscript is the source of truth."""
+
+  source: str = "epub"
+
+
+@dataclass(frozen=True)
+class ManuscriptConfig:
+  """Layout and objective-check settings for an authored manuscript."""
+
+  root: str = "manuscript"
+  chapters: str = "chapters"
+  front_matter: str = "front-matter.md"
+  back_matter: str = "back-matter.md"
+  required_header_keys: tuple[str, ...] = ("chapter", "title", "words", "status")
+  extra_header_keys: bool = True
+  epub: str = "book/dist/book.epub"
+
+
+@dataclass(frozen=True)
+class AccessibilityConfig:
+  """EPUB Accessibility 1.1 claims written into authored editions."""
+
+  certified_by: str = ""
+  cover_alt: str = ""
+  summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -180,6 +295,9 @@ class AppConfig:
   tts: TTSConfig = field(default_factory=TTSConfig)
   audio: AudioConfig = field(default_factory=AudioConfig)
   qa: QAConfig = field(default_factory=QAConfig)
+  project: ProjectConfig = field(default_factory=ProjectConfig)
+  manuscript: ManuscriptConfig = field(default_factory=ManuscriptConfig)
+  accessibility: AccessibilityConfig = field(default_factory=AccessibilityConfig)
 
 
 @dataclass(frozen=True)

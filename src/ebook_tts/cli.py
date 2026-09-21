@@ -15,17 +15,38 @@ from typing import Any
 from . import __version__
 from .config import default_config, load_config, write_config_template
 from .epub.package import load_publication
+from .editions.epub import build_epub
 from .errors import ConfigError, EbookTTSError, ProviderError
+from .hooks.git import install_git_hooks
+from .hooks.lifecycle import pre_commit_check, rebuild_if_stale, status_report
+from .manuscript.check import check_manuscript
+from .manuscript.compile import (
+    manuscript_root,
+    publication_from_manuscript,
+    write_compiled_markdown,
+)
+from .manuscript.extract import extract_manuscript
 from .media.tools import preflight
-from .models import MODEL_PROFILES, AppConfig, Plan, Publication
+from .models import MODEL_PROFILES, AppConfig, BookMetadata, Plan, Publication
 from .outputs.package import (
     PackageArtifact,
     package_archive,
     package_bookplayer,
+    package_m4b,
     package_tracks,
 )
 from .providers.base import STTProvider, TTSProvider
 from .qa.evaluate import evaluate_run
+from .qa.omissions import (
+    DEFAULT_MIN_GAP,
+    check_format_durations,
+    diagnose_omissions,
+    format_find_report,
+    load_audio_mono,
+    load_transcript_cache,
+    robust_transcribe_window,
+)
+from .qa.scoring import assess_transcript
 from .utils import slugify
 from .workspace.adoption import adopt_legacy_v1
 from .workspace.generation import (
@@ -45,11 +66,17 @@ COMMANDS = (
     "doctor",
     "inspect",
     "init",
+    "extract",
+    "check",
+    "compile",
+    "status",
+    "hooks",
     "plan",
     "adopt",
     "sample",
     "generate",
     "validate",
+    "diagnose",
     "package",
     "attempts",
     "build",
@@ -73,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
   """Define the public command surface and paid-operation guardrails."""
   parser = argparse.ArgumentParser(
       prog="ebook-tts",
-      description="Build validated audiobooks from DRM-free EPUB files.",
+      description="Build validated, accessible audiobooks from DRM-free EPUBs or authored manuscripts.",
   )
   parser.add_argument("--version", action="version", version=__version__)
   subparsers = parser.add_subparsers(dest="command", required=True)
@@ -92,17 +119,97 @@ def build_parser() -> argparse.ArgumentParser:
   inspect_parser.set_defaults(handler=_command_inspect)
 
   init_parser = subparsers.add_parser(
-      "init", help="Create an editable audiobook.toml for an EPUB."
+      "init", help="Create an editable audiobook.toml for an EPUB or manuscript."
   )
-  init_parser.add_argument("epub", type=Path)
+  init_parser.add_argument(
+      "epub",
+      type=Path,
+      nargs="?",
+      help="Source EPUB (omit when --manuscript is used).",
+  )
   init_parser.add_argument("--output", type=Path, default=Path("audiobook.toml"))
+  init_parser.add_argument(
+      "--manuscript",
+      type=Path,
+      help="Author a book from this markdown tree instead of consuming an EPUB.",
+  )
   init_parser.add_argument("--force", action="store_true")
   init_parser.set_defaults(handler=_command_init)
+
+  extract_parser = subparsers.add_parser(
+      "extract",
+      help="Turn a commercial EPUB into an editable markdown manuscript.",
+  )
+  extract_parser.add_argument("epub", type=Path)
+  _add_config(extract_parser)
+  extract_parser.add_argument("--manuscript", type=Path, required=True)
+  extract_parser.set_defaults(handler=_command_extract)
+
+  check_parser = subparsers.add_parser(
+      "check",
+      help="Run objective manuscript checks (headers, word counts, identities).",
+  )
+  _add_config(check_parser)
+  check_parser.add_argument("--chapter", type=Path, help="Check one chapter file.")
+  check_parser.add_argument("--json", action="store_true")
+  check_parser.set_defaults(handler=_command_check)
+
+  compile_parser = subparsers.add_parser(
+      "compile",
+      help="Build a compiled markdown edition and an accessible EPUB.",
+  )
+  _add_config(compile_parser)
+  compile_parser.add_argument("--cover", type=Path)
+  compile_parser.add_argument("--output", type=Path)
+  compile_parser.add_argument(
+      "--markdown-only",
+      action="store_true",
+      help="Write assembled markdown without calling pandoc.",
+  )
+  compile_parser.add_argument(
+      "--if-stale",
+      action="store_true",
+      help="Skip the EPUB rebuild when prose is not newer.",
+  )
+  compile_parser.set_defaults(handler=_command_compile)
+
+  status_parser = subparsers.add_parser(
+      "status",
+      help="Report pending chapter defects and stale EPUB editions.",
+  )
+  _add_config(status_parser)
+  status_parser.set_defaults(handler=_command_status)
+
+  hooks_parser = subparsers.add_parser(
+      "hooks",
+      help="Install or run portable git lifecycle hooks.",
+  )
+  hook_commands = hooks_parser.add_subparsers(dest="hooks_command", required=True)
+  hook_install = hook_commands.add_parser(
+      "install", help="Write pre-commit and post-commit hooks into .git/hooks."
+  )
+  hook_install.add_argument("--force", action="store_true")
+  hook_install.set_defaults(handler=_command_hooks_install)
+  hook_pre = hook_commands.add_parser(
+      "pre-commit", help="Check staged chapter files (used by the git hook)."
+  )
+  _add_config(hook_pre)
+  hook_pre.set_defaults(handler=_command_hooks_pre_commit)
+  hook_post = hook_commands.add_parser(
+      "post-commit", help="Rebuild a stale EPUB (used by the git hook)."
+  )
+  _add_config(hook_post)
+  hook_post.set_defaults(handler=_command_hooks_post_commit)
 
   plan_parser = subparsers.add_parser(
       "plan", help="Extract, normalize, chunk, and estimate without API calls."
   )
-  plan_parser.add_argument("epub", type=Path)
+  plan_parser.add_argument(
+      "epub",
+      type=Path,
+      nargs="?",
+      help="Source EPUB. Omit when project.source = \"manuscript\".",
+  )
   _add_config(plan_parser)
   plan_parser.add_argument("--workspace", type=Path)
   plan_parser.add_argument("--json", action="store_true")
@@ -163,10 +270,102 @@ def build_parser() -> argparse.ArgumentParser:
   validate.add_argument("--run-id")
   validate.add_argument(
       "--stt",
-      choices=("none", "elevenlabs"),
+      choices=("none", "elevenlabs", "local"),
       help="Override qa.stt_provider for this evaluation.",
   )
   validate.set_defaults(handler=_command_validate)
+
+  diagnose = subparsers.add_parser(
+      "diagnose",
+      help="Turn spoken-gate failures into actionable omission and format reports.",
+  )
+  diagnose_commands = diagnose.add_subparsers(dest="diagnose_command", required=True)
+
+  diagnose_find = diagnose_commands.add_parser(
+      "find",
+      help="Report real manuscript omissions from expected vs heard text.",
+  )
+  diagnose_find.add_argument(
+      "workspace",
+      type=Path,
+      nargs="?",
+      help="Optional workspace; with --track loads planned text and cached transcript.",
+  )
+  diagnose_find.add_argument("--plan-id", help="Plan SHA-256 (default: current plan).")
+  diagnose_find.add_argument("--run-id")
+  diagnose_find.add_argument(
+      "--track",
+      type=int,
+      help="Track number when resolving text/transcript from a workspace.",
+  )
+  diagnose_find.add_argument(
+      "--chunk",
+      type=int,
+      help="Chunk index within the track (default: whole track when possible).",
+  )
+  diagnose_find.add_argument(
+      "--expected",
+      type=Path,
+      help="Manuscript / planned spoken text file.",
+  )
+  diagnose_find.add_argument(
+      "--heard",
+      type=Path,
+      help="ASR transcript text file, or QA transcript JSON with a text field.",
+  )
+  diagnose_find.add_argument(
+      "--audio",
+      type=Path,
+      help="Track audio for energy-based patch region suggestions.",
+  )
+  diagnose_find.add_argument(
+      "--assembly-map",
+      type=Path,
+      help="Optional assembly_map JSON (speech_segment entries) for seam localization.",
+  )
+  diagnose_find.add_argument(
+      "--min-gap",
+      type=int,
+      default=None,
+      help="Minimum expected-token run to report (default 5).",
+  )
+  diagnose_find.add_argument("--json", action="store_true")
+  _add_config(diagnose_find)
+  diagnose_find.set_defaults(handler=_command_diagnose_find)
+
+  diagnose_seam = diagnose_commands.add_parser(
+      "seam",
+      help="Re-transcribe a splice window to confirm it reads clean.",
+  )
+  diagnose_seam.add_argument("audio", type=Path)
+  diagnose_seam.add_argument("--start", type=float, required=True)
+  diagnose_seam.add_argument("--end", type=float, required=True)
+  diagnose_seam.add_argument(
+      "--model",
+      default="mlx-community/whisper-large-v3-turbo",
+  )
+  _add_config(diagnose_seam)
+  diagnose_seam.set_defaults(handler=_command_diagnose_seam)
+
+  diagnose_formats = diagnose_commands.add_parser(
+      "formats",
+      help="Check that reference audio, MP3, and M4B chapter durations agree.",
+  )
+  diagnose_formats.add_argument(
+      "--reference",
+      type=Path,
+      required=True,
+      help="Reference WAV or MP3 whose duration is authoritative.",
+  )
+  diagnose_formats.add_argument("--mp3", type=Path, default=None)
+  diagnose_formats.add_argument("--m4b", type=Path, default=None)
+  diagnose_formats.add_argument(
+      "--chapter-title",
+      default=None,
+      help="M4B chapter title prefix, e.g. '39.'",
+  )
+  _add_config(diagnose_formats)
+  diagnose_formats.set_defaults(handler=_command_diagnose_formats)
 
   package = subparsers.add_parser(
       "package", help="Create QA-gated distribution artifacts."
@@ -176,7 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
   package.add_argument(
       "--format",
       action="append",
-      choices=("bookplayer", "archive", "tracks"),
+      choices=("bookplayer", "archive", "tracks", "m4b"),
       dest="formats",
       help="Repeat for multiple outputs (default: bookplayer and archive).",
   )
@@ -201,15 +400,21 @@ def build_parser() -> argparse.ArgumentParser:
   attempt_authorize.set_defaults(handler=_command_attempts_authorize)
 
   build = subparsers.add_parser(
-      "build", help="Plan, generate, validate, and package one EPUB."
+      "build",
+      help="Plan, generate, validate, and package from an EPUB or manuscript.",
   )
-  build.add_argument("epub", type=Path)
+  build.add_argument(
+      "epub",
+      type=Path,
+      nargs="?",
+      help="Source EPUB. Omit when project.source = \"manuscript\".",
+  )
   _add_config(build)
   build.add_argument("--workspace", type=Path)
   build.add_argument(
       "--format",
       action="append",
-      choices=("bookplayer", "archive", "tracks"),
+      choices=("bookplayer", "archive", "tracks", "m4b"),
       dest="formats",
   )
   build.add_argument("--output-dir", type=Path)
@@ -278,8 +483,11 @@ def _command_doctor(args: argparse.Namespace) -> int:
   config = _load_command_config(args)
   checks: list[dict[str, Any]] = []
 
-  def record(name: str, ok: bool, detail: str) -> None:
-    checks.append({"name": name, "ok": ok, "detail": detail})
+  def record(name: str, ok: bool, detail: str, warning: bool = False) -> None:
+    item = {"name": name, "ok": ok, "detail": detail}
+    if warning:
+      item["warning"] = True
+    checks.append(item)
 
   record("python", sys.version_info >= (3, 11), sys.version.split()[0])
   try:
@@ -288,20 +496,37 @@ def _command_doctor(args: argparse.Namespace) -> int:
     record("ffprobe", True, tools.ffprobe)
   except EbookTTSError as exc:
     record("media-tools", False, str(exc))
-  try:
-    sdk_version = metadata.version("elevenlabs")
-    record("elevenlabs-sdk", True, sdk_version)
-  except metadata.PackageNotFoundError:
-    record("elevenlabs-sdk", False, "install ebook-tts[elevenlabs]")
-  record(
-      "ELEVENLABS_API_KEY",
-      bool(os.getenv("ELEVENLABS_API_KEY")),
-      "set" if os.getenv("ELEVENLABS_API_KEY") else "not set",
-  )
+  record("source", True, config.project.source)
+  if config.tts.provider == "local":
+    try:
+      import mlx_audio
+
+      record("mlx-audio", True, getattr(mlx_audio, "__file__", "present"))
+    except ImportError:
+      record("mlx-audio", False, "install ebook-tts[local] on Apple Silicon")
+    wav = Path(config.tts.local.reference_wav)
+    txt = Path(config.tts.local.reference_text)
+    record("reference-wav", wav.is_file(), str(wav) if config.tts.local.reference_wav else "set tts.local.reference_wav")
+    record(
+        "reference-text",
+        txt.is_file(),
+        str(txt) if config.tts.local.reference_text else "set tts.local.reference_text",
+    )
+  else:
+    try:
+      sdk_version = metadata.version("elevenlabs")
+      record("elevenlabs-sdk", True, sdk_version)
+    except metadata.PackageNotFoundError:
+      record("elevenlabs-sdk", False, "install ebook-tts[elevenlabs]")
+    record(
+        "ELEVENLABS_API_KEY",
+        bool(os.getenv("ELEVENLABS_API_KEY")),
+        "set" if os.getenv("ELEVENLABS_API_KEY") else "not set",
+    )
   record(
       "voice-id",
       bool(config.tts.voice_id),
-      config.tts.voice_id or "set tts.voice_id or ELEVENLABS_VOICE_ID",
+      config.tts.voice_id or "set tts.voice_id",
   )
   profile = MODEL_PROFILES.get(config.tts.model_id)
   record(
@@ -314,14 +539,21 @@ def _command_doctor(args: argparse.Namespace) -> int:
           else f"unknown model {config.tts.model_id}; explicit limit in use"
       ),
   )
+  if config.project.source == "manuscript":
+    import shutil
+
+    record(
+        "pandoc",
+        shutil.which("pandoc") is not None,
+        shutil.which("pandoc") or "install pandoc to build EPUB editions",
+        warning=shutil.which("pandoc") is None,
+    )
   if config.tts.output_format == "mp3_44100_192":
-    checks.append(
-        {
-            "name": "output-tier",
-            "ok": True,
-            "detail": "192 kbps requires an eligible ElevenLabs subscription tier",
-            "warning": True,
-        }
+    record(
+        "output-tier",
+        True,
+        "192 kbps requires an eligible ElevenLabs subscription tier",
+        warning=True,
     )
   if args.json:
     print(json.dumps({"checks": checks}, indent=2))
@@ -329,7 +561,8 @@ def _command_doctor(args: argparse.Namespace) -> int:
     for check in checks:
       marker = "WARN" if check.get("warning") else "OK" if check["ok"] else "FAIL"
       print(f"[{marker:4}] {check['name']}: {check['detail']}")
-  return 0 if all(check["ok"] for check in checks) else 1
+  blocking = [item for item in checks if not item["ok"] and not item.get("warning")]
+  return 0 if not blocking else 1
 
 
 def _command_inspect(args: argparse.Namespace) -> int:
@@ -345,11 +578,39 @@ def _command_init(args: argparse.Namespace) -> int:
   output = args.output.expanduser()
   if output.exists() and not args.force:
     raise ConfigError(f"Configuration already exists: {output}; use --force to replace it.")
+  if args.manuscript is not None:
+    root = args.manuscript.expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "chapters").mkdir(exist_ok=True)
+    metadata = BookMetadata(title=root.name.replace("-", " ").title(), authors=())
+    write_config_template(
+        output,
+        metadata,
+        source="manuscript",
+        manuscript_root=str(root),
+    )
+    print(f"Created {output}")
+    print(f"Manuscript root: {root}")
+    print("Add chapter files under manuscript/chapters/, then run `ebook-tts check`.")
+    return 0
+  if args.epub is None:
+    raise ConfigError("Provide an EPUB path, or pass --manuscript DIR to author a book.")
   publication = load_publication(args.epub, default_config())
   write_config_template(output, publication.metadata)
   print(f"Created {output}")
   print("Set tts.voice_id, then run `ebook-tts plan`.")
   return 0
+
+
+def _load_publication(args: argparse.Namespace, config: AppConfig) -> Publication:
+  epub = getattr(args, "epub", None)
+  if epub is not None:
+    return load_publication(epub, config)
+  if config.project.source == "manuscript":
+    return publication_from_manuscript(manuscript_root(config), config)
+  raise ConfigError(
+      'Provide an EPUB path, or set project.source = "manuscript" in audiobook.toml.'
+  )
 
 
 def _default_workspace(publication: Publication) -> Path:
@@ -358,7 +619,7 @@ def _default_workspace(publication: Publication) -> Path:
 
 def _command_plan(args: argparse.Namespace) -> int:
   config = _load_command_config(args)
-  publication = load_publication(args.epub, config)
+  publication = _load_publication(args, config)
   workspace = args.workspace or _default_workspace(publication)
   plan = create_plan(publication, config, workspace)
   summary = {
@@ -382,6 +643,105 @@ def _command_plan(args: argparse.Namespace) -> int:
         f"{summary['max_characters']:,} characters."
     )
     print("No provider API calls were made.")
+  return 0
+
+
+def _command_extract(args: argparse.Namespace) -> int:
+  config = _load_command_config(args)
+  publication = extract_manuscript(args.epub, args.manuscript.expanduser(), config)
+  print(f"Extracted {len(publication.sections)} chapter(s) into {args.manuscript}")
+  print("The markdown tree is now the source of truth. Edit it, then compile and plan.")
+  return 0
+
+
+def _command_check(args: argparse.Namespace) -> int:
+  config = _load_command_config(args)
+  if args.chapter is not None:
+    from .manuscript.check import check_chapter
+    from .manuscript.discover import load_chapter
+
+    document = load_chapter(args.chapter.expanduser(), config.manuscript)
+    findings = check_chapter(document)
+    if args.json:
+      print(
+          json.dumps(
+              {
+                  "path": document.path,
+                  "ok": not any(item.severity == "error" for item in findings),
+                  "diagnostics": [item.format_text() for item in findings],
+              },
+              indent=2,
+          )
+      )
+    else:
+      if not findings:
+        print(f"OK {args.chapter}")
+      for item in findings:
+        print(item.format_text())
+    return 0 if not any(item.severity == "error" for item in findings) else 1
+  report = check_manuscript(manuscript_root(config), config)
+  if args.json:
+    print(
+        json.dumps(
+            {
+                "ok": report.ok,
+                "chapters": len(report.documents),
+                "diagnostics": [item.format_text() for item in report.diagnostics],
+            },
+            indent=2,
+        )
+    )
+  else:
+    print(f"{len(report.documents)} chapter(s)")
+    for item in report.diagnostics:
+      print(item.format_text())
+    if report.ok:
+      print("Objective manuscript checks passed.")
+  return 0 if report.ok else 1
+
+
+def _command_compile(args: argparse.Namespace) -> int:
+  config = _load_command_config(args)
+  root = manuscript_root(config)
+  markdown = root.parent / ".build" / "compiled.md"
+  write_compiled_markdown(root, config, markdown)
+  print(f"compiled {markdown}")
+  if args.markdown_only:
+    return 0
+  epub = build_epub(
+      config,
+      cover=args.cover,
+      output=args.output,
+      if_stale=args.if_stale,
+  )
+  print(f"wrote {epub} ({epub.stat().st_size:,} bytes)")
+  return 0
+
+
+def _command_status(args: argparse.Namespace) -> int:
+  blocks = status_report(_load_command_config(args), cwd=Path.cwd())
+  if blocks:
+    print("\n\n".join(blocks))
+    return 1
+  print("No pending manuscript defects; editions are current.")
+  return 0
+
+
+def _command_hooks_install(args: argparse.Namespace) -> int:
+  written = install_git_hooks(Path.cwd(), force=args.force)
+  for path in written:
+    print(f"Installed {path}")
+  print("pre-commit checks staged chapters; post-commit rebuilds a stale EPUB.")
+  return 0
+
+
+def _command_hooks_pre_commit(args: argparse.Namespace) -> int:
+  return pre_commit_check(_load_command_config(args), cwd=Path.cwd())
+
+
+def _command_hooks_post_commit(args: argparse.Namespace) -> int:
+  result = rebuild_if_stale(_load_command_config(args), cwd=Path.cwd())
+  print(f"Edition rebuild: {result}")
   return 0
 
 
@@ -422,6 +782,10 @@ def _load_selected_plan(args: argparse.Namespace) -> Plan:
 
 
 def _tts_provider(config: AppConfig) -> TTSProvider:
+  if config.tts.provider == "local":
+    from .providers.local import LocalTTSProvider
+
+    return LocalTTSProvider(config)
   if config.tts.provider != "elevenlabs":
     raise ProviderError(f"Unsupported TTS provider: {config.tts.provider}")
   from .providers.elevenlabs import ElevenLabsTTSProvider
@@ -511,13 +875,15 @@ def _generate_from_args(
   selected = _parse_tracks(tracks_value, int(plan.manifest["track_count"]))
   if not explicit_yes and approved_sample(plan, config, config.tts.provider) is None:
     raise ProviderError(
-        "Paid generation requires an approved matching voice sample. Run "
+        "Generation requires an approved matching voice sample. Run "
         "`ebook-tts sample create`, listen, and approve it; or pass --yes to "
         "explicitly bypass this gate."
     )
   count, characters, chunks = _generation_summary(plan, selected)
+  billed = config.tts.provider != "local"
+  kind = "paid generation" if billed else "local generation"
   print(
-      f"Authorized paid generation: {count} track(s), {characters:,} text "
+      f"Authorized {kind}: {count} track(s), {characters:,} text "
       f"characters, {chunks} request(s)."
   )
   return generate(
@@ -545,6 +911,10 @@ def _command_generate(args: argparse.Namespace) -> int:
 def _stt_provider(config: AppConfig) -> STTProvider | None:
   if config.qa.stt_provider == "none":
     return None
+  if config.qa.stt_provider == "local":
+    from .providers.local import LocalSTTProvider
+
+    return LocalSTTProvider(model_id=config.qa.stt_model)
   if config.qa.stt_provider != "elevenlabs":
     raise ProviderError(f"Unsupported STT provider: {config.qa.stt_provider}")
   from .providers.elevenlabs import ElevenLabsSTTProvider
@@ -580,6 +950,220 @@ def _command_validate(args: argparse.Namespace) -> int:
   return _validate(plan, load_run(plan, args.run_id), config)[0]
 
 
+def _read_text_or_transcript(path: Path) -> str:
+  if path.suffix.lower() == ".json":
+    try:
+      return load_transcript_cache(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+      payload = json.loads(path.read_text(encoding="utf-8"))
+      text = payload.get("text")
+      if isinstance(text, str):
+        return text
+      raise ConfigError(f"JSON file has no transcript text: {path}") from None
+  return path.read_text(encoding="utf-8")
+
+
+def _resolve_diagnose_sources(
+    args: argparse.Namespace,
+) -> tuple[str, str, str, Path | None, list[dict[str, Any]] | None]:
+  """Return expected text, heard text, label, optional audio, optional assembly map."""
+  from .workspace.manifests import read_planned_chunk_text, read_planned_section_text
+
+  expected: str | None = None
+  heard: str | None = None
+  label = "stdin"
+  audio_path: Path | None = args.audio.expanduser() if args.audio else None
+  assembly_map: list[dict[str, Any]] | None = None
+
+  if args.assembly_map:
+    payload = json.loads(args.assembly_map.expanduser().read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+      assembly_map = [item for item in payload if isinstance(item, dict)]
+    elif isinstance(payload, dict) and isinstance(payload.get("assembly_map"), list):
+      assembly_map = [
+          item for item in payload["assembly_map"] if isinstance(item, dict)
+      ]
+    else:
+      raise ConfigError("--assembly-map must be a JSON list or object with assembly_map.")
+
+  if args.expected:
+    expected = _read_text_or_transcript(args.expected.expanduser())
+    label = str(args.expected)
+  if args.heard:
+    heard = _read_text_or_transcript(args.heard.expanduser())
+
+  if args.workspace is not None:
+    if args.track is None:
+      raise ConfigError("Workspace diagnose find requires --track.")
+    plan = _load_selected_plan(args)
+    run = load_run(plan, args.run_id)
+    sections = plan.manifest.get("sections")
+    if not isinstance(sections, list):
+      raise ConfigError("Plan sections are invalid.")
+    section = next(
+        (
+            item
+            for item in sections
+            if isinstance(item, dict) and item.get("track_number") == args.track
+        ),
+        None,
+    )
+    if section is None:
+      raise ConfigError(f"Track {args.track} is not in the plan.")
+    stem = str(section.get("output_stem") or "")
+    if args.chunk is not None:
+      chunks = section.get("chunks")
+      if not isinstance(chunks, list):
+        raise ConfigError(f"Track {args.track} has no planned chunks.")
+      planned = next(
+          (
+              item
+              for item in chunks
+              if isinstance(item, dict) and item.get("index") == args.chunk
+          ),
+          None,
+      )
+      if planned is None:
+        raise ConfigError(f"Track {args.track} has no chunk {args.chunk}.")
+      if expected is None:
+        expected = read_planned_chunk_text(
+            plan, planned, label=f"Track {args.track} chunk {args.chunk}"
+        )
+      label = f"track {args.track} chunk {args.chunk}"
+      transcript_name = f"chunk_{args.chunk:04d}.json"
+    else:
+      if expected is None:
+        expected = read_planned_section_text(plan, section)
+      label = f"track {args.track} ({stem})"
+      transcript_name = None
+    if heard is None:
+      qa_root = run.run_path.parent / "qa"
+      if not qa_root.is_dir():
+        raise ConfigError(
+            f"No QA directory under {run.run_path.parent}; run validate with STT first "
+            "or pass --heard."
+        )
+      candidates = sorted(qa_root.glob(f"*/transcripts/{stem}"))
+      if not candidates:
+        raise ConfigError(
+            f"No cached transcripts for {stem}; run validate with STT or pass --heard."
+        )
+      transcript_dir = candidates[-1]
+      if transcript_name is None:
+        parts: list[str] = []
+        for path in sorted(transcript_dir.glob("chunk_*.json")):
+          parts.append(load_transcript_cache(path))
+        if not parts:
+          raise ConfigError(f"No chunk transcripts in {transcript_dir}")
+        heard = " ".join(parts)
+      else:
+        cache = transcript_dir / transcript_name
+        if not cache.is_file():
+          raise ConfigError(f"Missing transcript cache: {cache}")
+        heard = load_transcript_cache(cache)
+    if audio_path is None:
+      final = run.run_path.parent / "audio" / f"{stem}.mp3"
+      if final.is_file():
+        audio_path = final
+
+  if expected is None or heard is None:
+    raise ConfigError(
+        "diagnose find requires --expected and --heard, or a workspace with "
+        "--track (and cached transcripts)."
+    )
+  return expected, heard, label, audio_path, assembly_map
+
+
+def _command_diagnose_find(args: argparse.Namespace) -> int:
+  expected, heard, label, audio_path, assembly_map = _resolve_diagnose_sources(args)
+  min_gap = DEFAULT_MIN_GAP if args.min_gap is None else int(args.min_gap)
+  audio = None
+  rate = 44100
+  if audio_path is not None:
+    config = _load_command_config(args)
+    tools = preflight(config.audio.ffmpeg, config.audio.ffprobe)
+    audio, rate = load_audio_mono(audio_path, ffmpeg=tools.ffmpeg)
+  gaps = diagnose_omissions(
+      expected,
+      heard,
+      min_gap=min_gap,
+      audio=audio,
+      sample_rate=rate,
+      assembly_map=assembly_map,
+  )
+  gate = assess_transcript(expected, heard)
+  if args.json:
+    print(
+        json.dumps(
+            {
+                "label": label,
+                "min_gap": min_gap,
+                "gate": {
+                    "passed": gate["passed"],
+                    "wer": gate["wer"],
+                    "coverage": gate["coverage"],
+                    "max_expected_gap": gate["max_expected_gap"],
+                },
+                "omissions": [gap.to_dict() for gap in gaps],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+  else:
+    print(
+        format_find_report(
+            gaps,
+            label=label,
+            gate={
+                "passed": gate["passed"],
+                "wer": gate["wer"],
+                "coverage": gate["coverage"],
+                "max_expected_gap": gate["max_expected_gap"],
+            },
+            min_gap=min_gap,
+        ),
+        end="",
+    )
+  return 1 if gaps else 0
+
+
+def _command_diagnose_seam(args: argparse.Namespace) -> int:
+  config = _load_command_config(args)
+  tools = preflight(config.audio.ffmpeg, config.audio.ffprobe)
+  audio, rate = load_audio_mono(args.audio.expanduser(), ffmpeg=tools.ffmpeg)
+  if args.end <= args.start:
+    raise ConfigError("--end must be greater than --start.")
+  text = robust_transcribe_window(
+      audio, rate, args.start, args.end, model=args.model
+  )
+  print(f"seam [{args.start:.2f}-{args.end:.2f}s]:")
+  print(f"  {text}")
+  return 0
+
+
+def _command_diagnose_formats(args: argparse.Namespace) -> int:
+  config = _load_command_config(args)
+  tools = preflight(config.audio.ffmpeg, config.audio.ffprobe)
+  reference = args.reference.expanduser()
+  from .media.tools import probe_audio
+
+  ref_info = probe_audio(reference, tools.ffprobe)
+  checks = check_format_durations(
+      reference_path=reference,
+      reference_duration=ref_info.duration_seconds,
+      mp3_path=args.mp3.expanduser() if args.mp3 else None,
+      m4b_path=args.m4b.expanduser() if args.m4b else None,
+      chapter_title=args.chapter_title,
+      ffprobe=tools.ffprobe,
+  )
+  ok = True
+  for check in checks:
+    print(f"{check.label:9}: {check.detail}")
+    ok = ok and check.ok
+  return 0 if ok else 1
+
+
 def _package_formats(
     *,
     plan: Plan,
@@ -595,6 +1179,7 @@ def _package_formats(
       "bookplayer": package_bookplayer,
       "archive": package_archive,
       "tracks": package_tracks,
+      "m4b": package_m4b,
   }
   artifacts: list[PackageArtifact] = []
   for name in selected:
@@ -661,7 +1246,7 @@ def _command_attempts_authorize(args: argparse.Namespace) -> int:
 
 def _command_build(args: argparse.Namespace) -> int:
   config = _load_command_config(args)
-  publication = load_publication(args.epub, config)
+  publication = _load_publication(args, config)
   plan = create_plan(
       publication,
       config,

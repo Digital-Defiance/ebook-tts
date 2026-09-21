@@ -100,6 +100,7 @@ def request_fingerprint_candidates(
     position: int,
     generation: Mapping[str, Any],
     legacy_v1: bool,
+    section: Mapping[str, Any] | None = None,
 ) -> frozenset[str]:
   """Recompute the only request fingerprints valid for one persisted chunk."""
   voice_id = _required_string(generation, "voice_id")
@@ -115,6 +116,14 @@ def request_fingerprint_candidates(
     raise ValueError("generation.voice_settings must be a JSON object")
   if legacy_v1 and settings:
     raise ValueError("legacy-v1 generation.voice_settings must be empty")
+  if section is not None:
+    settings = dict(settings)
+    local = dict(settings.get("local") or {})
+    local["section"] = {
+        "chapter": section.get("chapter"),
+        "track": section.get("track"),
+    }
+    settings["local"] = local
   previous_text, next_text = adjacent_text_context(texts, position, context)
   expanded = expanded_request_record(
       text=texts[position],

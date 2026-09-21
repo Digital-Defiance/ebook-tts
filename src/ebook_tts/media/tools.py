@@ -338,3 +338,230 @@ def assemble_mp3_track(
   os.replace(temporary, output_path)
   fsync_directory(output_path.parent)
   return probe_audio(output_path, tools.ffprobe, expected_format=output_format)
+
+
+def _require_aac_encoder(ffmpeg: str) -> None:
+  _require_capability(
+      ffmpeg,
+      ["-encoders"],
+      r"^\s*A\S*\s+aac\s",
+      "AAC encoder",
+  )
+  _require_capability(
+      ffmpeg,
+      ["-muxers"],
+      r"^\s*E\S*\s+(mp4|ipod)\s",
+      "MP4/M4B muxer",
+  )
+
+
+def ffmetadata_chapters(
+    *,
+    title: str,
+    artist: str,
+    album: str,
+    chapter_titles: Sequence[str],
+    chapter_durations: Sequence[float],
+) -> str:
+  """Build an ffmetadata file with one chapter per finished track."""
+  if (
+      not chapter_titles
+      or len(chapter_titles) != len(chapter_durations)
+  ):
+    raise MediaError("M4B chapters require matching non-empty titles and durations.")
+  lines = [
+      ";FFMETADATA1",
+      f"title={_ffmeta_escape(title)}",
+      f"artist={_ffmeta_escape(artist)}",
+      f"album={_ffmeta_escape(album)}",
+      f"album_artist={_ffmeta_escape(artist)}",
+  ]
+  cursor_ms = 0
+  for chapter_title, duration in zip(chapter_titles, chapter_durations):
+    if not math.isfinite(duration) or duration <= 0:
+      raise MediaError(f"Invalid chapter duration for {chapter_title!r}.")
+    end_ms = cursor_ms + max(1, int(round(duration * 1000)))
+    lines.extend(
+        [
+            "[CHAPTER]",
+            "TIMEBASE=1/1000",
+            f"START={cursor_ms}",
+            f"END={end_ms}",
+            f"title={_ffmeta_escape(chapter_title)}",
+        ]
+    )
+    cursor_ms = end_ms
+  return "\n".join(lines) + "\n"
+
+
+def _ffmeta_escape(value: str) -> str:
+  return (
+      value.replace("\\", "\\\\")
+      .replace("=", "\\=")
+      .replace(";", "\\;")
+      .replace("#", "\\#")
+      .replace("\n", " ")
+  )
+
+
+def probe_chapters(path: Path, ffprobe: str) -> list[dict[str, Any]]:
+  """Return chapter records from an M4B/MP4 container."""
+  result = run_process(
+      [
+          ffprobe,
+          "-v",
+          "error",
+          "-show_chapters",
+          "-of",
+          "json",
+          str(path),
+      ],
+      timeout=60,
+  )
+  if result.returncode != 0:
+    raise MediaError(
+        f"ffprobe could not read chapters from {path}: "
+        f"{(result.stderr or result.stdout).strip()}"
+    )
+  try:
+    payload = json.loads(result.stdout or "{}")
+  except json.JSONDecodeError as exc:
+    raise MediaError(f"ffprobe returned invalid chapter JSON for {path}") from exc
+  chapters = payload.get("chapters")
+  if not isinstance(chapters, list):
+    return []
+  return [item for item in chapters if isinstance(item, dict)]
+
+
+def assemble_m4b(
+    *,
+    track_paths: Sequence[Path],
+    track_titles: Sequence[str],
+    track_durations: Sequence[float],
+    output_path: Path,
+    tools: MediaTools,
+    title: str,
+    artist: str,
+    album: str,
+    cover_path: Path | None = None,
+    audio_bitrate_kbps: int = 128,
+) -> MediaInfo:
+  """Transcode ordered MP3 tracks into one chaptered M4B audiobook.
+
+  This is a second lossy encode (MP3→AAC). Prefer it as a distribution
+  convenience after MP3 tracks have already passed QA, not as an archival master.
+  """
+  if (
+      not track_paths
+      or len(track_paths) != len(track_titles)
+      or len(track_paths) != len(track_durations)
+  ):
+    raise MediaError("M4B assembly requires matching track paths, titles, and durations.")
+  _require_aac_encoder(tools.ffmpeg)
+  for path in track_paths:
+    if path.is_symlink() or not path.is_file():
+      raise MediaError(f"M4B input track is missing or unsafe: {path}")
+  if output_path.is_symlink() or output_path.exists():
+    raise MediaError(f"Refusing to replace existing M4B: {output_path}")
+  has_cover = cover_path is not None
+  if has_cover and (cover_path.is_symlink() or not cover_path.is_file()):
+    raise MediaError(f"Cover artwork is missing or unsafe: {cover_path}")
+
+  output_path.parent.mkdir(parents=True, exist_ok=True)
+  work = output_path.parent / f".{output_path.stem}.{os.getpid()}.m4b-work"
+  if work.exists():
+    shutil.rmtree(work)
+  work.mkdir(parents=True)
+  temporary = output_path.with_name(
+      f".{output_path.stem}.{os.getpid()}.part{output_path.suffix}"
+  )
+  temporary.unlink(missing_ok=True)
+  try:
+    concat_path = work / "concat.txt"
+    meta_path = work / "chapters.ffmetadata"
+    atomic_write_text(
+        concat_path,
+        "\n".join(ffconcat_line(path) for path in track_paths) + "\n",
+    )
+    atomic_write_text(
+        meta_path,
+        ffmetadata_chapters(
+            title=title,
+            artist=artist,
+            album=album,
+            chapter_titles=track_titles,
+            chapter_durations=track_durations,
+        ),
+    )
+    command = [
+        tools.ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_path),
+        "-i",
+        str(meta_path),
+    ]
+    if has_cover:
+      assert cover_path is not None
+      command.extend(["-i", str(cover_path)])
+    command.extend(["-map", "0:a:0", "-map_metadata", "1"])
+    if has_cover:
+      command.extend(
+          [
+              "-map",
+              "2:v:0",
+              "-c:v",
+              "mjpeg",
+              "-disposition:v:0",
+              "attached_pic",
+          ]
+      )
+    command.extend(
+        [
+            "-c:a",
+            "aac",
+            "-b:a",
+            f"{audio_bitrate_kbps}k",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
+            str(temporary),
+        ]
+    )
+    result = run_process(command, timeout=3600)
+    if result.returncode != 0 or not temporary.is_file():
+      temporary.unlink(missing_ok=True)
+      raise MediaError(
+          f"ffmpeg could not assemble M4B {title!r}: "
+          f"{(result.stderr or result.stdout).strip()}"
+      )
+    chapters = probe_chapters(temporary, tools.ffprobe)
+    if len(chapters) != len(track_titles):
+      temporary.unlink(missing_ok=True)
+      raise MediaError(
+          f"Assembled M4B has {len(chapters)} chapters; expected {len(track_titles)}."
+      )
+    info = probe_audio(temporary, tools.ffprobe)
+    expected_duration = sum(float(item) for item in track_durations)
+    delta = abs(info.duration_seconds - expected_duration)
+    allowed = max(3.0, expected_duration * 0.05)
+    if delta > allowed:
+      temporary.unlink(missing_ok=True)
+      raise MediaError(
+          f"Assembled M4B duration differs from tracks by {delta:.2f}s "
+          f"(allowed {allowed:.2f}s)."
+      )
+    os.replace(temporary, output_path)
+    fsync_directory(output_path.parent)
+    return probe_audio(output_path, tools.ffprobe)
+  finally:
+    temporary.unlink(missing_ok=True)
+    shutil.rmtree(work, ignore_errors=True)

@@ -1,16 +1,21 @@
 # ebook-tts
 
-`ebook-tts` turns a DRM-free EPUB into an ordered, resumable, and validated
-MP3 audiobook. It plans every paid request before generation, fails closed when
-a provider response may have been billed, evaluates finished audio, and creates
-BookPlayer-compatible and generic distribution archives.
+`ebook-tts` turns a DRM-free EPUB, or an authored markdown manuscript, into an
+ordered, resumable, and validated MP3 audiobook. It plans every request before
+generation, fails closed when a paid provider response may have been billed,
+evaluates finished audio, and creates BookPlayer-compatible and generic
+distribution archives. Authored books compile to an accessible EPUB and keep
+that edition in currency with the markdown source.
 
 > **Status:** alpha. Keep the source EPUB and generated workspace backed up, and
 > review a short voice sample before authorizing a full book.
 
 ## Features
 
-- Reads `.epub` directly; no manual extraction or fixed `OEBPS` layout
+- Reads `.epub` directly, or authors from markdown chapters with restricted headers
+- Compiles markdown to EPUB 3 with Accessibility 1.1 package metadata
+- Git hooks replace IDE-only save/rebuild/report bindings
+- Local Fish S2 Pro rendering (`ebook-tts[local]`) beside ElevenLabs
 - Discovers OPF metadata, cover art, linear spine, EPUB 3 navigation, EPUB 2 NCX,
   and multiple TOC fragments in one XHTML file
 - Rejects encrypted resources, path traversal, symlinks, duplicate ZIP members,
@@ -30,8 +35,8 @@ BookPlayer-compatible and generic distribution archives.
   with each report bound to the exact canonical run and audio state
 - Optional timestamped ElevenLabs Scribe transcription with WER/CER, long-change
   spans, and protected-term review
-- Content-derived BookPlayer ZIP, generic archive ZIP, and extracted track
-  outputs with deep verification before existing artifacts are reused
+- Content-derived BookPlayer ZIP, generic archive ZIP, extracted track
+  directory, and chaptered M4B outputs with deep verification before reuse
 - No network or paid provider calls in the normal test suite
 
 ## Requirements
@@ -61,7 +66,23 @@ From a source checkout:
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[elevenlabs,dev]'
+# On Apple Silicon, for on-device Fish/Whisper:
+# python -m pip install -e '.[local,dev]'
 ```
+
+Offline tests never call providers. On Apple Silicon, after installing the
+`local` extra and pointing at a voice reference you may clone, run the live
+smoke:
+
+```bash
+export EBOOK_TTS_LIVE_LOCAL=1
+export EBOOK_TTS_LIVE_REFERENCE_WAV=/path/to/narrator.wav
+export EBOOK_TTS_LIVE_REFERENCE_TEXT=/path/to/narrator.txt
+pytest -m live -q
+```
+
+See `tests/live/README.md` for what that smoke asserts (anchor discard, Whisper
+WER, protected name presence).
 
 Check the environment without making an API request:
 
@@ -221,8 +242,8 @@ uv build
 The test suite creates synthetic EPUBs and generated tone MP3s in temporary
 directories. It never reads a real book or calls a provider.
 
-See [`docs/index.md`](docs/index.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), and
-[`SECURITY.md`](SECURITY.md).
+See [`docs/index.md`](docs/index.md), [`docs/authoring.md`](docs/authoring.md),
+[`CONTRIBUTING.md`](CONTRIBUTING.md), and [`SECURITY.md`](SECURITY.md).
 
 ## Legal and privacy
 

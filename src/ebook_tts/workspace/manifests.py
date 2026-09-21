@@ -49,6 +49,11 @@ def _config_record(config: AppConfig) -> dict[str, Any]:
       "planning": {
           "model_id": config.tts.model_id,
           "max_characters": config.tts.max_characters,
+          **(
+              {"source": config.project.source}
+              if config.project.source != "epub"
+              else {}
+          ),
       },
   }
 

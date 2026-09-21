@@ -15,6 +15,9 @@ EPUB → inspect → configuration → immutable plan
                                   ↓
                  tracks | BookPlayer ZIP | archive ZIP
 
+markdown manuscript → check → compile (accessible EPUB) → plan → …
+commercial EPUB → extract → markdown manuscript → (author edits) → compile → plan
+
 legacy-v1 tree + source EPUB → offline verify/adopt → verification-only plan + run
                                                         ↓
                                              local validation/package

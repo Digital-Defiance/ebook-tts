@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [{ name = "ebook-tts contributors" }]
-keywords = ["audiobook", "epub", "text-to-speech", "elevenlabs", "bookplayer"]
+keywords = ["audiobook", "epub", "text-to-speech", "elevenlabs", "bookplayer", "accessibility"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -27,9 +27,16 @@ dependencies = []
 
 [project.optional-dependencies]
 elevenlabs = ["elevenlabs==2.65.0"]
+local = [
+  "numpy>=2.0.0",
+  "soundfile>=0.13.0",
+  "mlx-audio>=0.2.0",
+  "mlx-whisper>=0.4.0",
+]
 dev = [
   "build==1.4.4",
   "pytest==9.0.3",
+  "numpy>=2.0.0",
 ]
 
 [project.scripts]
@@ -49,6 +56,9 @@ packages = ["src/ebook_tts"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+markers = [
+  "live: real on-device Fish/Whisper smoke; requires EBOOK_TTS_LIVE_LOCAL=1",
+]
 
 [tool.coverage.run]
 branch = true

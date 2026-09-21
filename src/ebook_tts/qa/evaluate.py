@@ -31,6 +31,7 @@ from ..workspace.manifests import read_planned_chunk_text, verify_plan_artifacts
 from ..workspace.request_identity import request_fingerprint_candidates
 from .alignment import align_text, comparison_words, missing_protected_terms
 from .report import render_html
+from .scoring import assess_transcript
 from .signal import analyze_signal, signal_record
 
 
@@ -79,6 +80,7 @@ def _qa_configuration(config: AppConfig, stt: STTProvider | None) -> dict[str, A
       "max_internal_silence_seconds": config.qa.max_internal_silence_seconds,
       "clipping_peak_db": config.qa.clipping_peak_db,
       "protected_terms": list(config.qa.protected_terms),
+      "spoken_gate": config.qa.spoken_gate,
   }
 
 
@@ -303,11 +305,21 @@ def _validated_chunks(
           f"Track {track_number}, chunk {position} request fingerprint is invalid."
       )
     try:
+      generation_settings = generation.get("voice_settings")
+      section_identity = None
+      if isinstance(generation_settings, dict) and isinstance(
+          generation_settings.get("local"), dict
+      ):
+        section_identity = {
+            "chapter": section.get("chapter_number"),
+            "track": track_number,
+        }
       candidates = request_fingerprint_candidates(
           texts=references,
           position=position - 1,
           generation=generation,
           legacy_v1=legacy_v1,
+          section=section_identity,
       )
     except ValueError as exc:
       raise QualityError(
@@ -631,6 +643,7 @@ def evaluate_run(
               model_id=config.qa.stt_model,
           )
           alignment = align_text(validated.reference, transcript.text)
+          spoken = assess_transcript(validated.reference, transcript.text)
           relevant_terms = [
               term
               for term in config.qa.protected_terms
@@ -648,6 +661,15 @@ def evaluate_run(
             track_warnings.append(
                 f"Chunk {validated.index} has {len(suspicious)} long transcript "
                 "difference span(s) requiring review."
+            )
+          if config.qa.spoken_gate and not spoken["passed"]:
+            track_warnings.append(
+                f"Chunk {validated.index} failed the spoken transcript gate "
+                f"(WER {spoken['wer']}, coverage {spoken['coverage']})."
+            )
+            failures.append(
+                f"Track {track_number} chunk {validated.index} failed the spoken "
+                "transcript gate."
             )
           if chunk_missing:
             track_warnings.append(
@@ -671,6 +693,14 @@ def evaluate_run(
                   "reference_characters": alignment.reference_characters,
                   "missing_protected_terms": list(chunk_missing),
                   "review_spans": suspicious,
+                  "spoken_assessment": {
+                      "passed": spoken["passed"],
+                      "wer": spoken["wer"],
+                      "coverage": spoken["coverage"],
+                      "max_expected_gap": spoken["max_expected_gap"],
+                      "max_added_span": spoken["max_added_span"],
+                      "suspicious_spans": spoken["suspicious_spans"],
+                  },
               }
           )
         word_rate = track_word_edits / max(1, track_reference_words)

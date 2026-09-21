@@ -48,16 +48,52 @@ The evaluator:
 6. Checks protected terms only in chunks where each term occurs in the source.
 7. Aggregates weighted metrics by track and book.
 
+When `qa.spoken_gate = true`, each chunk also runs a spoken-aware gate that
+treats numeral words, clock times, UK/US spelling, and weak function-word ASR
+flips as equivalent to the manuscript. Exact WER/CER remain in the report;
+the spoken gate is the extra release failure for local engines.
+
+## Diagnosing omissions
+
+The spoken gate reports that words are missing (`max_expected_gap`); it does not
+name them or show where to cut the audio. Use `ebook-tts diagnose` after a
+failing validate:
+
+```bash
+# Diff planned text against a transcript (or QA transcript JSON)
+ebook-tts diagnose find --expected planned.txt --heard transcript.txt
+
+# Workspace mode: load planned track/chunk text + cached STT transcript
+ebook-tts diagnose find WORKSPACE --track 13 --chunk 1 --audio path/to/track.mp3
+
+# Confirm a splice window reads cleanly (local Whisper)
+ebook-tts diagnose seam track.mp3 --start 412.1 --end 418.4
+
+# Confirm repaired WAV/MP3/M4B durations still agree
+ebook-tts diagnose formats --reference chapter.wav --mp3 chapter.mp3 \
+  --m4b book.m4b --chapter-title "13."
+```
+
+`find` prints each non-benign expected-gap (≥5 tokens by default), the surrounding
+prose, and—when audio is supplied—an energy-based `--start/--end` suggestion for
+a verified phrase patch. It does not repair audio; choose a re-render or an
+explicit `[[tts.local.tracks]]` patch after listening.
+
 Raw provider responses and word timestamps are stored only in the private QA
 workspace. Generic distribution archives include the summarized report, not raw
 transcripts.
 
-Scribe support uses the ElevenLabs batch STT API and word timestamps. See the
-[ElevenLabs STT documentation](https://elevenlabs.io/docs/overview/capabilities/speech-to-text).
-STT is never part of adoption or default validation. Selecting
-`--stt elevenlabs` is an explicit network/provider operation that may be billed.
+Scribe support uses the ElevenLabs batch STT API and word timestamps. Local
+Whisper (`qa.stt_provider = "local"`) is an on-device alternative. STT is never
+part of adoption or default validation.
 An attempt marker is written before each uncached request, and ambiguous
 failures block automatic resubmission.
+
+## Live local smoke
+
+Offline tests use fake TTS/STT. To exercise real Fish S2 Pro rendering, voice
+anchor discard, and Whisper on Apple Silicon, see
+[../tests/live/README.md](../tests/live/README.md).
 
 ## Human review
 

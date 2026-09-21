@@ -13,6 +13,10 @@ class EpubError(EbookTTSError):
   """The input EPUB is malformed, unsafe, unsupported, or empty."""
 
 
+class ManuscriptError(EbookTTSError):
+  """A manuscript chapter or edition build is incomplete or inconsistent."""
+
+
 class WorkspaceError(EbookTTSError):
   """The build workspace is invalid or conflicts with immutable state."""
 

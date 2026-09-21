@@ -120,15 +120,61 @@ def _definitive_rejection(exc: BaseException) -> bool:
   return _status_code(exc) in {400, 401, 402, 403, 404, 405, 413, 415, 422, 429}
 
 
+def provider_is_billed(provider: TTSProvider) -> bool:
+  """Paid adapters must fail closed; local compute may retry automatically."""
+  return bool(getattr(provider, "billed", True))
+
+
+def _request_settings(
+    config: AppConfig,
+    *,
+    chapter_number: int | None = None,
+    track_number: int | None = None,
+) -> dict[str, Any]:
+  settings = dict(config.tts.voice_settings)
+  if config.tts.provider != "local":
+    return settings
+  from ..providers.local_tracks import tracks_identity
+
+  wav = Path(config.tts.local.reference_wav) if config.tts.local.reference_wav else None
+  txt = Path(config.tts.local.reference_text) if config.tts.local.reference_text else None
+  local_settings: dict[str, Any] = {
+      "sentence_pause": config.tts.local.sentence_pause,
+      "sentence_turns": config.tts.local.sentence_turns,
+      "anchor": config.tts.local.anchor,
+      "seed": config.tts.local.seed,
+      "instruct": config.tts.local.instruct,
+      "verbalize_numerals": config.tts.local.verbalize_numerals,
+      "numeral_style": config.tts.local.numeral_style,
+      "chunk_length": config.tts.local.chunk_length,
+      "segment_gap_ms": config.tts.local.segment_gap_ms,
+      "max_words_per_call": config.tts.local.max_words_per_call,
+      "reference_wav": config.tts.local.reference_wav,
+      "reference_text": config.tts.local.reference_text,
+      "reference_wav_sha256": sha256_file(wav) if wav is not None and wav.is_file() else "",
+      "reference_text_sha256": sha256_file(txt) if txt is not None and txt.is_file() else "",
+      "tracks": tracks_identity(config.tts.local.tracks),
+  }
+  if track_number is not None:
+    # Section identity only — overrides are resolved from tracks[] so request
+    # fingerprints stay recomputable from the run's voice_settings + section.
+    local_settings["section"] = {
+        "chapter": chapter_number,
+        "track": track_number,
+    }
+  settings["local"] = local_settings
+  return settings
+
+
 def _generation_record(config: AppConfig, provider: TTSProvider) -> dict[str, Any]:
-  return {
+  record = {
       "provider": provider.name,
       "provider_sdk_version": getattr(provider, "version", "unknown"),
       "voice_id": config.tts.voice_id,
       "model_id": config.tts.model_id,
       "output_format": config.tts.output_format,
       "context_characters": config.tts.context_characters,
-      "voice_settings": dict(config.tts.voice_settings),
+      "voice_settings": _request_settings(config),
       "assembly": {
           "policy_version": ASSEMBLY_POLICY_VERSION,
           "checkpoint_version": ASSEMBLY_CHECKPOINT_VERSION,
@@ -136,6 +182,9 @@ def _generation_record(config: AppConfig, provider: TTSProvider) -> dict[str, An
           "genre": config.audio.genre,
       },
   }
+  if not provider_is_billed(provider):
+    record["billed"] = False
+  return record
 
 
 def _stable_generation(generation: dict[str, Any]) -> dict[str, Any]:
@@ -166,7 +215,7 @@ def _new_run(plan: Plan, config: AppConfig, provider: TTSProvider) -> Generation
     )
   if not config.tts.voice_id:
     raise ProviderError(
-        "A voice ID is required. Set tts.voice_id or ELEVENLABS_VOICE_ID."
+        "A voice ID is required. Set tts.voice_id, or ELEVENLABS_VOICE_ID for ElevenLabs."
     )
   generation = _generation_record(config, provider)
   run_id = _run_id(plan, generation)
@@ -249,6 +298,11 @@ def _request_for_chunk(
 ) -> SynthesisRequest:
   chunk_records = section["chunks"]
   track_number = int(section["track_number"])
+  chapter_number = (
+      int(section["chapter_number"])
+      if section.get("chapter_number") is not None
+      else None
+  )
   current = read_planned_chunk_text(
       plan,
       chunk_records[chunk_position],
@@ -282,7 +336,11 @@ def _request_for_chunk(
       output_format=config.tts.output_format,
       previous_text=previous_text,
       next_text=next_text,
-      settings=config.tts.voice_settings,
+      settings=_request_settings(
+          config,
+          chapter_number=chapter_number if config.tts.provider == "local" else None,
+          track_number=track_number if config.tts.provider == "local" else None,
+      ),
   )
 
 
@@ -434,7 +492,10 @@ def _generate_chunk(
       os.fsync(stream.fileno())
   except Exception as exc:
     has_bytes = partial_path.exists() and partial_path.stat().st_size > 0
-    definitive = bytes_written == 0 and not has_bytes and _definitive_rejection(exc)
+    billed = provider_is_billed(provider)
+    definitive = bytes_written == 0 and not has_bytes and (
+        not billed or _definitive_rejection(exc)
+    )
     if definitive:
       partial_path.unlink(missing_ok=True)
       attempt_path.unlink(missing_ok=True)
@@ -443,6 +504,8 @@ def _generate_chunk(
     if definitive:
       raise ProviderError(
           f"Provider explicitly rejected request{suffix}; correct the problem and rerun: {exc}"
+          if billed
+          else f"Local synthesis failed and can be retried: {exc}"
       ) from exc
     raise AmbiguousRequestError(
         f"Paid request failed with an ambiguous outcome{suffix}. Attempt evidence "
@@ -584,11 +647,21 @@ def _native_assembly_contract(
           f"Track {track_number}, chunk {position} identity is invalid."
       )
     try:
+      generation_settings = generation.get("voice_settings")
+      section_identity = None
+      if isinstance(generation_settings, dict) and isinstance(
+          generation_settings.get("local"), dict
+      ):
+        section_identity = {
+            "chapter": section.get("chapter_number"),
+            "track": track_number,
+        }
       valid_requests = request_fingerprint_candidates(
           texts=references,
           position=position - 1,
           generation=generation,
           legacy_v1=False,
+          section=section_identity,
       )
     except ValueError as exc:
       raise WorkspaceError(
@@ -898,6 +971,39 @@ def generate(
           track_count=int(plan.manifest["track_count"]),
           cover_path=cover_path,
       )
+      production_patches: list[dict[str, Any]] = []
+      if config.tts.local.tracks:
+        from ..providers.local_patch import rewrite_mp3_with_patches
+        from ..providers.local_tracks import match_track_override
+
+        chapter_number = (
+            int(section["chapter_number"])
+            if section.get("chapter_number") is not None
+            else None
+        )
+        try:
+          override = match_track_override(
+              config.tts.local.tracks,
+              chapter_number=chapter_number,
+              track_number=track_number,
+          )
+        except ValueError as exc:
+          raise WorkspaceError(str(exc)) from exc
+        if override is not None and override.patches:
+          info, patch_records = rewrite_mp3_with_patches(
+              mp3_path=output_path,
+              patches=override.patches,
+              tools=media_tools,
+              output_format=str(contract["output_format"]),
+              title=str(metadata["title"]),
+              album=str(metadata["album"]),
+              artist=str(metadata["artist"]),
+              genre=str(metadata["genre"]),
+              track_number=track_number,
+              track_count=int(plan.manifest["track_count"]),
+              cover_path=cover_path,
+          )
+          production_patches = list(patch_records)
       state["status"] = "complete"
       state["final_audio"] = {
           "file": output_path.name,
@@ -905,6 +1011,7 @@ def generate(
           "checkpoint_version": ASSEMBLY_CHECKPOINT_VERSION,
           "assembly": contract,
           "assembly_sha256": sha256_text(canonical_json(contract)),
+          "production_patches": production_patches,
       }
       _save_run(run, manifest)
       current_run = GenerationRun(plan.workspace, run.run_path, run.run_id, manifest)
@@ -1223,7 +1330,7 @@ def generate_sample(
   require_native_generation_plan(plan)
   if not config.tts.voice_id:
     raise ProviderError(
-        "A voice ID is required. Set tts.voice_id or ELEVENLABS_VOICE_ID."
+        "A voice ID is required. Set tts.voice_id, or ELEVENLABS_VOICE_ID for ElevenLabs."
     )
   raw_sections = plan.manifest.get("sections")
   if not isinstance(raw_sections, list) or not raw_sections:
@@ -1248,7 +1355,7 @@ def generate_sample(
       voice_id=config.tts.voice_id,
       model_id=config.tts.model_id,
       output_format=config.tts.output_format,
-      settings=config.tts.voice_settings,
+      settings=_request_settings(config),
   )
   generation = _generation_record(config, provider)
   stable_generation = _stable_generation(generation)

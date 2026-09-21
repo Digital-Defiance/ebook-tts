@@ -6,7 +6,12 @@
 - `text/`: visible XHTML extraction, checked normalization, and chunking
 - `workspace/`: immutable plans, locks, paid checkpoints, runs, samples, recovery,
   and offline legacy-v1 adoption
-- `providers/`: provider-neutral protocols and ElevenLabs adapters
+- `providers/`: provider-neutral protocols, ElevenLabs adapters, and optional
+  local Fish/Whisper adapters
+- `manuscript/`: restricted chapter headers, objective checks, EPUB extract,
+  and compile-from-markdown
+- `editions/`: Pandoc EPUB build and EPUB Accessibility 1.1 post-processing
+- `hooks/`: git pre-commit/post-commit installers and status reporting
 - `media/`: executable preflight, probing, complete decoding, and MP3 assembly
 - `qa/`: signal metrics, STT caching, edit alignment, JSON/HTML reports
 - `outputs/`: QA-gated distribution directories and ZIP profiles

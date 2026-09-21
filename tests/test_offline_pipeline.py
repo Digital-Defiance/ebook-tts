@@ -212,3 +212,55 @@ def test_voice_sample_must_be_explicitly_approved(
   approved = approve_sample(plan, sample.sample_id)
   assert approved.approved
   assert approved_sample(plan, config, "fake") is not None
+
+
+def test_spoken_gate_passes_numeral_transcripts(
+    epub_factory,
+    tmp_path: Path,
+    tone_mp3: bytes,
+    media_tools,
+) -> None:
+  plan, config = _plan(epub_factory, tmp_path)
+  config = replace(config, qa=replace(config.qa, spoken_gate=True, clipping_peak_db=1.0))
+  run = generate(plan=plan, config=config, provider=FakeTTS(tone_mp3), tools=media_tools)
+  references = [
+      read_planned_text(plan, chunk["text_file"])
+      for section in plan.manifest["sections"]
+      for chunk in section["chunks"]
+  ]
+  # STT returns spoken numerals for any digit forms in the manuscript.
+  from ebook_tts.text.spoken import verbalize_speech_text
+
+  spoken_refs = [verbalize_speech_text(text) for text in references]
+  quality = evaluate_run(
+      plan=plan,
+      run=run,
+      config=config,
+      stt_provider=FakeSTT(spoken_refs),
+      tools=media_tools,
+  )
+  assert quality.report["status"] == "pass"
+  for track in quality.report["tracks"]:
+    for chunk in track["transcription"]["chunks"]:
+      assert chunk["spoken_assessment"]["passed"] is True
+
+
+def test_spoken_gate_fails_on_real_omissions(
+    epub_factory,
+    tmp_path: Path,
+    tone_mp3: bytes,
+    media_tools,
+) -> None:
+  plan, config = _plan(epub_factory, tmp_path)
+  config = replace(config, qa=replace(config.qa, spoken_gate=True, clipping_peak_db=1.0))
+  run = generate(plan=plan, config=config, provider=FakeTTS(tone_mp3), tools=media_tools)
+  chunk_count = sum(len(section["chunks"]) for section in plan.manifest["sections"])
+  quality = evaluate_run(
+      plan=plan,
+      run=run,
+      config=config,
+      stt_provider=FakeSTT(["short."] * chunk_count),
+      tools=media_tools,
+  )
+  assert quality.report["status"] == "fail"
+  assert any("spoken transcript gate" in item for item in quality.report["failures"])

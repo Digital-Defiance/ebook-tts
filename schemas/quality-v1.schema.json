@@ -20,7 +20,7 @@
     "configuration": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["qa_version", "stt_provider", "stt_model", "language", "max_word_error_rate", "max_character_error_rate", "max_internal_silence_seconds", "clipping_peak_db", "protected_terms"],
+      "required": ["qa_version", "stt_provider", "stt_model", "language", "max_word_error_rate", "max_character_error_rate", "max_internal_silence_seconds", "clipping_peak_db", "protected_terms", "spoken_gate"],
       "properties": {
         "qa_version": {"type": "integer", "minimum": 1},
         "stt_provider": {"type": "string", "minLength": 1},
@@ -30,7 +30,8 @@
         "max_character_error_rate": {"type": ["number", "null"], "minimum": 0},
         "max_internal_silence_seconds": {"type": "number", "exclusiveMinimum": 0},
         "clipping_peak_db": {"type": "number"},
-        "protected_terms": {"type": "array", "items": {"type": "string"}}
+        "protected_terms": {"type": "array", "items": {"type": "string"}},
+        "spoken_gate": {"type": "boolean"}
       }
     },
     "book": {"type": "object"},

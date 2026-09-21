@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import PackagingError
+from ..media.tools import MediaTools, assemble_m4b, preflight, probe_chapters
 from ..models import MANIFEST_VERSION, Plan
 from ..qa.evaluate import QA_VERSION, quality_report_id, run_manifest_fingerprint
 from ..qa.report import html_document
@@ -66,6 +67,7 @@ _QA_CONFIGURATION_KEYS = {
     "max_internal_silence_seconds",
     "clipping_peak_db",
     "protected_terms",
+    "spoken_gate",
 }
 _TRACK_REPORT_KEYS = {
     "track_number",
@@ -982,3 +984,89 @@ def package_tracks(
     book_slug = slugify(str(plan.manifest["book"]["title"]))
     target = output_directory / f"{book_slug}-tracks-{package_id[:20]}"
     return _publish_directory(target, members)
+
+
+def package_m4b(
+    *,
+    plan: Plan,
+    run: GenerationRun,
+    output_directory: Path,
+    allow_unvalidated: bool = False,
+    allow_failed_qa: bool = False,
+    tools: MediaTools | None = None,
+    audio_bitrate_kbps: int = 128,
+) -> PackageArtifact:
+  """Build one chaptered M4B from the validated MP3 tracks.
+
+  This remuxes through AAC. The package identity still commits to the source
+  MP3 track hashes and chapter titles so a rebuild is reuse-safe when those
+  inputs are unchanged.
+  """
+  with WorkspaceLock(plan.workspace):
+    context = _package_context(
+        plan=plan,
+        supplied_run=run,
+        allow_unvalidated=allow_unvalidated,
+        allow_failed_qa=allow_failed_qa,
+    )
+    book = plan.manifest["book"]
+    title = str(book.get("title") or "Audiobook")
+    authors = book.get("authors") or ()
+    if isinstance(authors, list):
+      artist = ", ".join(str(item) for item in authors) or "Unknown"
+    else:
+      artist = str(authors) if authors else "Unknown"
+    identity_members = [
+        _member(track.path.name, track.path) for track in context.tracks
+    ]
+    identity_members.append(
+        _member(
+            "chapters.json",
+            _json_bytes(
+                [
+                    {
+                        "track_number": track.track_number,
+                        "title": track.title,
+                        "duration_seconds": track.duration_seconds,
+                        "sha256": track.sha256,
+                    }
+                    for track in context.tracks
+                ]
+            ),
+        )
+    )
+    package_id = _members_sha256(identity_members)
+    book_slug = slugify(title)
+    target = output_directory / f"{book_slug}-{package_id[:20]}.m4b"
+    output_directory.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+      raise PackagingError(f"M4B target must not be a symbolic link: {target}")
+    if target.exists():
+      chapters = probe_chapters(target, (tools or preflight("ffmpeg", "ffprobe")).ffprobe)
+      if len(chapters) != len(context.tracks):
+        raise PackagingError(
+            f"Existing M4B chapter count does not match the run: {target}"
+        )
+      return PackageArtifact("m4b", target, sha256_file(target), target.stat().st_size)
+
+    media = tools or preflight("ffmpeg", "ffprobe")
+    cover = verified_cover_path(plan)
+    assemble_m4b(
+        track_paths=[track.path for track in context.tracks],
+        track_titles=[track.title for track in context.tracks],
+        track_durations=[track.duration_seconds for track in context.tracks],
+        output_path=target,
+        tools=media,
+        title=title,
+        artist=artist,
+        album=title,
+        cover_path=cover,
+        audio_bitrate_kbps=audio_bitrate_kbps,
+    )
+    chapters = probe_chapters(target, media.ffprobe)
+    if len(chapters) != len(context.tracks):
+      target.unlink(missing_ok=True)
+      raise PackagingError(
+          f"Built M4B chapter count does not match the run: {target}"
+      )
+    return PackageArtifact("m4b", target, sha256_file(target), target.stat().st_size)
