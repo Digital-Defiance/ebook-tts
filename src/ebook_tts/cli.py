@@ -68,6 +68,7 @@ COMMANDS = (
     "init",
     "extract",
     "check",
+    "chapters",
     "compile",
     "status",
     "hooks",
@@ -151,8 +152,36 @@ def build_parser() -> argparse.ArgumentParser:
   )
   _add_config(check_parser)
   check_parser.add_argument("--chapter", type=Path, help="Check one chapter file.")
+  check_parser.add_argument(
+      "--write-counts",
+      action="store_true",
+      help=(
+          "Rewrite each chapter's declared words: header to the observed prose "
+          "count. Touches only that header line, never the prose. Opt-in."
+      ),
+  )
   check_parser.add_argument("--json", action="store_true")
   check_parser.set_defaults(handler=_command_check)
+
+  chapters_parser = subparsers.add_parser(
+      "chapters",
+      help="List manuscript chapters, optionally grouped or filtered by a header key.",
+  )
+  _add_config(chapters_parser)
+  chapters_parser.add_argument(
+      "--group-by",
+      metavar="KEY",
+      help="Group output by this header key (for example pov_id or status).",
+  )
+  chapters_parser.add_argument(
+      "--where",
+      metavar="KEY=VALUE",
+      action="append",
+      default=[],
+      help="Keep only chapters whose header KEY equals VALUE. Repeatable.",
+  )
+  chapters_parser.add_argument("--json", action="store_true")
+  chapters_parser.set_defaults(handler=_command_chapters)
 
   compile_parser = subparsers.add_parser(
       "compile",
@@ -656,6 +685,35 @@ def _command_extract(args: argparse.Namespace) -> int:
 
 def _command_check(args: argparse.Namespace) -> int:
   config = _load_command_config(args)
+  if args.write_counts:
+    if args.chapter is not None:
+      raise ConfigError("--write-counts reconciles the whole manuscript; drop --chapter.")
+    from .manuscript.check import reconcile_word_counts
+
+    fixes = reconcile_word_counts(manuscript_root(config), config)
+    if args.json:
+      print(
+          json.dumps(
+              {
+                  "reconciled": len(fixes),
+                  "changes": [
+                      {
+                          "path": item.path,
+                          "declared": item.declared,
+                          "observed": item.observed,
+                      }
+                      for item in fixes
+                  ],
+              },
+              indent=2,
+          )
+      )
+    elif fixes:
+      for item in fixes:
+        print(item.format_text())
+      print(f"Reconciled {len(fixes)} declared word count(s).")
+    else:
+      print("Every declared word count already matches the prose.")
   if args.chapter is not None:
     from .manuscript.check import check_chapter
     from .manuscript.discover import load_chapter
@@ -698,6 +756,74 @@ def _command_check(args: argparse.Namespace) -> int:
     if report.ok:
       print("Objective manuscript checks passed.")
   return 0 if report.ok else 1
+
+
+def _command_chapters(args: argparse.Namespace) -> int:
+  """List chapters by any header key.
+
+  The tool stays ignorant of what a key means. `pov_id`, `movement`, and
+  `mode` are the author's vocabulary, not this package's, so grouping is
+  generic and reports header values verbatim. Reading one narrator's chapters
+  consecutively is a human review technique; this command only gathers them.
+  """
+  config = _load_command_config(args)
+  report = check_manuscript(manuscript_root(config), config)
+  filters: list[tuple[str, str]] = []
+  for clause in args.where:
+    key, separator, value = clause.partition("=")
+    if not separator or not key.strip():
+      raise ConfigError(f"--where expects KEY=VALUE, received {clause!r}.")
+    filters.append((key.strip(), value.strip()))
+
+  rows: list[dict[str, Any]] = []
+  for document in report.documents:
+    header = document.header
+    if any(str(header.get(key, "")) != value for key, value in filters):
+      continue
+    rows.append(
+        {
+            "chapter": header.get("chapter"),
+            "title": header.get("title"),
+            "words": header.get("words"),
+            "status": header.get("status"),
+            "path": document.path,
+            "group": str(header.get(args.group_by, "")) if args.group_by else None,
+        }
+    )
+  rows.sort(key=lambda row: (row["chapter"] is None, row["chapter"]))
+
+  if args.json:
+    print(json.dumps({"chapters": rows, "total_words": sum(
+        row["words"] for row in rows if isinstance(row["words"], int)
+    )}, indent=2))
+    return 0
+
+  if not rows:
+    print("No chapters matched.")
+    return 0
+
+  groups: dict[str, list[dict[str, Any]]] = {}
+  for row in rows:
+    groups.setdefault(row["group"] or "", []).append(row)
+  for name in sorted(groups):
+    members = groups[name]
+    if args.group_by:
+      total = sum(row["words"] for row in members if isinstance(row["words"], int))
+      label = name or "(unset)"
+      print(f"{args.group_by}={label}  {len(members)} chapter(s), {total:,} words")
+    for row in members:
+      indent = "  " if args.group_by else ""
+      print(
+          f"{indent}{row['chapter']:>4}  {str(row['words']):>6}w  "
+          f"{str(row['status']):<12} {row['title']}"
+      )
+    if args.group_by:
+      print()
+  print(
+      f"{len(rows)} chapter(s), "
+      f"{sum(row['words'] for row in rows if isinstance(row['words'], int)):,} words"
+  )
+  return 0
 
 
 def _command_compile(args: argparse.Namespace) -> int:

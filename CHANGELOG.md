@@ -24,6 +24,15 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `ebook-tts diagnose find|seam|formats`: turn spoken-gate failures into named
   omission reports, re-check splice windows with Whisper, and confirm
   WAV/MP3/M4B durations agree before shipping a repair
+- `ebook-tts check --write-counts`: reconcile each chapter's declared `words:`
+  header to its observed prose count. Rewrites only that header line, preserves
+  every other key verbatim, fails closed on an unparseable header, and is
+  opt-in so the drift signal is never silently erased
+- `ebook-tts chapters`: list manuscript chapters with `--group-by KEY` and
+  repeatable `--where KEY=VALUE` over any header key, including author keys the
+  tool does not interpret. Supports reading one viewpoint's chapters
+  consecutively, which is where voice drift is visible; it gathers and never
+  scores prose
 
 ## [0.1.0] - 2026-09-04
 

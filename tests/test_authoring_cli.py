@@ -113,3 +113,83 @@ def test_hooks_install_cli(tmp_path, capsys, monkeypatch) -> None:
   out = capsys.readouterr().out
   assert "Installed" in out
   assert (tmp_path / ".git" / "hooks" / "pre-commit").is_file()
+
+
+def _authored(manuscript: Path, chapter: int, title: str, body: str, **extra: object) -> None:
+  keys = "".join(f"{key}: {value}\n" for key, value in extra.items())
+  (manuscript / "chapters" / f"{chapter:03d}-ch.md").write_text(
+      f'---\nchapter: {chapter}\ntitle: "{title}"\nwords: 0\nstatus: draft\n{keys}---\n{body}',
+      encoding="utf-8",
+  )
+
+
+def test_check_write_counts_repairs_drift_then_passes(tmp_path, capsys, monkeypatch) -> None:
+  monkeypatch.chdir(tmp_path)
+  manuscript = tmp_path / "manuscript"
+  assert main(["init", "--manuscript", str(manuscript)]) == 0
+  config = str(tmp_path / "audiobook.toml")
+  _authored(manuscript, 1, "Start", "One two three four five.\n")
+
+  assert main(["check", "--config", config]) == 1
+  capsys.readouterr()
+
+  assert main(["check", "--config", config, "--write-counts"]) == 0
+  out = capsys.readouterr().out
+  assert "words: 0 -> 5" in out
+  assert "Reconciled 1 declared word count(s)." in out
+
+  assert main(["check", "--config", config]) == 0
+  assert "Objective manuscript checks passed" in capsys.readouterr().out
+
+  assert main(["check", "--config", config, "--write-counts"]) == 0
+  assert "already matches" in capsys.readouterr().out
+
+
+def test_check_write_counts_rejects_single_chapter_scope(tmp_path, monkeypatch) -> None:
+  monkeypatch.chdir(tmp_path)
+  manuscript = tmp_path / "manuscript"
+  assert main(["init", "--manuscript", str(manuscript)]) == 0
+  _authored(manuscript, 1, "Start", "One two three.\n")
+  assert main([
+      "check",
+      "--config",
+      str(tmp_path / "audiobook.toml"),
+      "--write-counts",
+      "--chapter",
+      str(manuscript / "chapters" / "001-ch.md"),
+  ]) == 1
+
+
+def test_chapters_groups_and_filters_by_any_header_key(tmp_path, capsys, monkeypatch) -> None:
+  monkeypatch.chdir(tmp_path)
+  manuscript = tmp_path / "manuscript"
+  assert main(["init", "--manuscript", str(manuscript)]) == 0
+  config = str(tmp_path / "audiobook.toml")
+  _authored(manuscript, 1, "First", "One two three.\n", pov_id="POV-NIA")
+  _authored(manuscript, 2, "Second", "One two three four.\n", pov_id="POV-MARA")
+  _authored(manuscript, 3, "Third", "One two.\n", pov_id="POV-NIA")
+  assert main(["check", "--config", config, "--write-counts"]) == 0
+  capsys.readouterr()
+
+  assert main(["chapters", "--config", config, "--group-by", "pov_id"]) == 0
+  out = capsys.readouterr().out
+  assert "pov_id=POV-NIA  2 chapter(s), 5 words" in out
+  assert "pov_id=POV-MARA  1 chapter(s), 4 words" in out
+  assert "3 chapter(s), 9 words" in out
+
+  assert main(["chapters", "--config", config, "--where", "pov_id=POV-NIA"]) == 0
+  out = capsys.readouterr().out
+  assert "First" in out and "Third" in out and "Second" not in out
+
+  assert main(["chapters", "--config", config, "--where", "pov_id=POV-NOBODY"]) == 0
+  assert "No chapters matched." in capsys.readouterr().out
+
+
+def test_chapters_rejects_a_malformed_where_clause(tmp_path, monkeypatch) -> None:
+  monkeypatch.chdir(tmp_path)
+  manuscript = tmp_path / "manuscript"
+  assert main(["init", "--manuscript", str(manuscript)]) == 0
+  _authored(manuscript, 1, "First", "One two three.\n")
+  assert main([
+      "chapters", "--config", str(tmp_path / "audiobook.toml"), "--where", "pov_id",
+  ]) == 1

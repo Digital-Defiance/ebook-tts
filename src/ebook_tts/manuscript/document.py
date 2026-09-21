@@ -224,6 +224,46 @@ def parse_chapter_document(
   )
 
 
+@dataclass(frozen=True)
+class WordCountFix:
+  """One reconciled `words:` header value."""
+
+  path: str
+  declared: int | None
+  observed: int
+
+  def format_text(self) -> str:
+    was = "absent" if self.declared is None else str(self.declared)
+    return f"{self.path} words: {was} -> {self.observed}"
+
+
+def rewrite_header_word_count(text: str, observed: int) -> str:
+  """Return `text` with only the header's `words:` line set to `observed`.
+
+  The prose body is never examined or altered, and no other header key is
+  reordered, requoted, or reformatted. A declared count is the one piece of
+  chapter metadata a tool can derive, so deriving it removes a whole class of
+  silent drift; rewriting anything else here would remove the author's text.
+  """
+  normalized = normalize_prose(text).lstrip("\ufeff")
+  lines = normalized.split("\n")
+  if not lines or lines[0] != HEADER_DELIMITER:
+    raise ManuscriptError("Refusing to rewrite a file with no opening header delimiter.")
+  close_index = next(
+      (index for index in range(1, len(lines)) if lines[index] == HEADER_DELIMITER),
+      None,
+  )
+  if close_index is None:
+    raise ManuscriptError("Refusing to rewrite a file with no closing header delimiter.")
+  for index in range(1, close_index):
+    match = HEADER_LINE_RE.match(lines[index])
+    if match is None or match.group("key") != "words":
+      continue
+    lines[index] = f"words: {observed}"
+    return "\n".join(lines)
+  raise ManuscriptError("Refusing to rewrite a header that declares no words key.")
+
+
 def render_chapter_markdown(
     *,
     header: dict[str, Any],

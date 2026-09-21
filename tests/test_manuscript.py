@@ -7,14 +7,19 @@ import pytest
 
 from ebook_tts.config import default_config, load_config
 from ebook_tts.errors import ManuscriptError
-from ebook_tts.manuscript.check import check_chapter, check_manuscript
+from ebook_tts.manuscript.check import check_chapter, check_manuscript, reconcile_word_counts
 from ebook_tts.manuscript.compile import (
     assemble_manuscript,
     manuscript_identity,
     publication_from_manuscript,
     write_compiled_markdown,
 )
-from ebook_tts.manuscript.document import count_prose_words, parse_chapter_document, render_chapter_markdown
+from ebook_tts.manuscript.document import (
+    count_prose_words,
+    parse_chapter_document,
+    render_chapter_markdown,
+    rewrite_header_word_count,
+)
 from ebook_tts.manuscript.extract import extract_manuscript
 from ebook_tts.workspace.manifests import create_plan
 
@@ -270,3 +275,95 @@ spoken_gate = true
   assert config.tts.local.anchor is True
   assert config.qa.spoken_gate is True
   assert config.tts.max_characters == 200_000
+
+
+def test_rewrite_header_word_count_touches_only_the_words_line() -> None:
+  prose = "One two three four five."
+  text = (
+      "---\n"
+      "chapter: 7\n"
+      'title: "A Title: With Punctuation"\n'
+      "words: 999\n"
+      "status: draft\n"
+      "pov_id: POV-NIA\n"
+      'hook: "words: 4 appears inside this hook"\n'
+      "---\n"
+      f"{prose}\n"
+  )
+  rewritten = rewrite_header_word_count(text, count_prose_words(prose))
+  assert "words: 5\n" in rewritten
+  assert "words: 999" not in rewritten
+  # Every other header line, and the prose, survive byte for byte.
+  assert 'title: "A Title: With Punctuation"' in rewritten
+  assert "pov_id: POV-NIA" in rewritten
+  assert 'hook: "words: 4 appears inside this hook"' in rewritten
+  assert rewritten.endswith(f"{prose}\n")
+  document = parse_chapter_document(rewritten, item="ch.md")
+  assert not check_chapter(document)
+
+
+def test_rewrite_header_word_count_ignores_a_words_line_in_the_prose() -> None:
+  prose = "words: 4321 is a line of prose, not a header."
+  text = f'---\nchapter: 1\ntitle: "T"\nwords: 0\nstatus: draft\n---\n{prose}\n'
+  rewritten = rewrite_header_word_count(text, count_prose_words(prose))
+  assert rewritten.count("words: 4321") == 1
+  assert f"words: {count_prose_words(prose)}\n" in rewritten
+
+
+def test_rewrite_header_word_count_fails_closed_on_malformed_input() -> None:
+  with pytest.raises(ManuscriptError, match="opening header delimiter"):
+    rewrite_header_word_count("chapter: 1\n", 1)
+  with pytest.raises(ManuscriptError, match="closing header delimiter"):
+    rewrite_header_word_count("---\nchapter: 1\n", 1)
+  with pytest.raises(ManuscriptError, match="no words key"):
+    rewrite_header_word_count('---\nchapter: 1\ntitle: "T"\nstatus: draft\n---\nWord.\n', 1)
+
+
+def test_reconcile_word_counts_repairs_drift_and_is_idempotent(tmp_path: Path) -> None:
+  root = tmp_path / "manuscript"
+  _write_manuscript(root, _chapter(words=3), _chapter(chapter=2, title="Second"))
+  config = _manuscript_config(root)
+  assert not check_manuscript(root, config).ok
+
+  observed = count_prose_words(
+      parse_chapter_document(
+          (root / "chapters" / "001-chapter.md").read_text(encoding="utf-8"),
+          item="001-chapter.md",
+      ).prose_body
+  )
+  fixes = reconcile_word_counts(root, config)
+  assert len(fixes) == 1
+  assert fixes[0].declared == 3
+  assert fixes[0].observed == observed
+  assert check_manuscript(root, config).ok
+
+  assert reconcile_word_counts(root, config) == ()
+
+
+def test_reconcile_word_counts_refuses_an_unreadable_chapter(tmp_path: Path) -> None:
+  root = tmp_path / "manuscript"
+  _write_manuscript(root, _chapter())
+  (root / "chapters" / "broken.md").write_text("no header here\n", encoding="utf-8")
+  with pytest.raises(ManuscriptError, match="Refusing to reconcile"):
+    reconcile_word_counts(root, _manuscript_config(root))
+
+
+def test_reconcile_word_counts_preserves_extra_header_keys(tmp_path: Path) -> None:
+  root = tmp_path / "manuscript"
+  chapters = root / "chapters"
+  chapters.mkdir(parents=True)
+  (chapters / "001.md").write_text(
+      '---\nchapter: 1\ntitle: "Kept"\nwords: 1\nstatus: draft\n'
+      "movement: adoption\npov_id: POV-MARA\nmode: none\n---\n"
+      "Four words of prose.\n",
+      encoding="utf-8",
+  )
+  config = _manuscript_config(root)
+  reconcile_word_counts(root, config)
+  document = parse_chapter_document(
+      (chapters / "001.md").read_text(encoding="utf-8"), item="001.md"
+  )
+  assert document.header["words"] == 4
+  assert document.header["pov_id"] == "POV-MARA"
+  assert document.header["movement"] == "adoption"
+  assert document.header["mode"] == "none"

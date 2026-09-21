@@ -5,8 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..errors import ManuscriptError
 from ..models import AppConfig
-from .document import ChapterDiagnostic, ChapterDocument, count_prose_words
+from ..utils import atomic_write_text
+from .document import (
+    ChapterDiagnostic,
+    ChapterDocument,
+    WordCountFix,
+    count_prose_words,
+    rewrite_header_word_count,
+)
 from .discover import discover_chapter_files, load_chapter
 
 
@@ -84,3 +92,42 @@ def check_manuscript(root: Path, config: AppConfig) -> ManuscriptReport:
       else:
         numbers[chapter] = document.path
   return ManuscriptReport(documents=tuple(documents), diagnostics=tuple(diagnostics))
+
+
+def reconcile_word_counts(root: Path, config: AppConfig) -> tuple[WordCountFix, ...]:
+  """Set every chapter's declared `words:` to its observed prose count.
+
+  This is the one objective defect a tool can repair without deciding anything
+  about the book: the count is derivable from the prose, so a declared value
+  that disagrees with it is always the stale one. Every other diagnostic stays
+  a report, because repairing it would mean choosing on the author's behalf.
+
+  Fails closed. A chapter whose header cannot be parsed is left untouched and
+  raises, so a malformed file is never silently rewritten or skipped.
+  """
+  fixes: list[WordCountFix] = []
+  for path in discover_chapter_files(root, config.manuscript):
+    document = load_chapter(path, config.manuscript)
+    if document.prose_body is None:
+      rendered = "; ".join(item.format_text() for item in document.diagnostics)
+      raise ManuscriptError(
+          f"Refusing to reconcile an unreadable chapter: {path}. {rendered}"
+      )
+    observed = count_prose_words(document.prose_body)
+    declared = document.header.get("words")
+    if declared == observed:
+      continue
+    original = path.read_text(encoding="utf-8")
+    atomic_write_text(
+        path,
+        rewrite_header_word_count(original, observed),
+        mode=path.stat().st_mode & 0o777,
+    )
+    fixes.append(
+        WordCountFix(
+            path=path.as_posix(),
+            declared=declared if isinstance(declared, int) else None,
+            observed=observed,
+        )
+    )
+  return tuple(fixes)
