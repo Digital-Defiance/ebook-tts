@@ -445,11 +445,17 @@ def assemble_m4b(
     album: str,
     cover_path: Path | None = None,
     audio_bitrate_kbps: int = 128,
+    chapter_gap_ms: float = 2500.0,
 ) -> MediaInfo:
   """Transcode ordered MP3 tracks into one chaptered M4B audiobook.
 
   This is a second lossy encode (MP3→AAC). Prefer it as a distribution
   convenience after MP3 tracks have already passed QA, not as an archival master.
+
+  When ``chapter_gap_ms`` is positive, a comfort-tone (or silent) pad is inserted
+  after every chapter but the last so announcements do not run into the next
+  chapter. Pad duration is folded into the preceding chapter marker so seeking
+  to a chapter lands on its start, not inside the seam tone.
   """
   if (
       not track_paths
@@ -457,6 +463,8 @@ def assemble_m4b(
       or len(track_paths) != len(track_durations)
   ):
     raise MediaError("M4B assembly requires matching track paths, titles, and durations.")
+  if not math.isfinite(chapter_gap_ms) or chapter_gap_ms < 0:
+    raise MediaError(f"chapter_gap_ms must be >= 0; got {chapter_gap_ms!r}.")
   _require_aac_encoder(tools.ffmpeg)
   for path in track_paths:
     if path.is_symlink() or not path.is_file():
@@ -477,11 +485,38 @@ def assemble_m4b(
   )
   temporary.unlink(missing_ok=True)
   try:
+    from .comfort_pad import write_inter_chapter_pad_mp3
+
+    concat_paths: list[Path] = []
+    chapter_durations: list[float] = []
+    last_index = len(track_paths) - 1
+    bit_rate = int(audio_bitrate_kbps) * 1000
+    for index, (path, duration) in enumerate(zip(track_paths, track_durations)):
+      if not math.isfinite(float(duration)) or float(duration) <= 0:
+        raise MediaError(f"Invalid M4B chapter duration for {path}.")
+      concat_paths.append(path)
+      chapter_end = float(duration)
+      if chapter_gap_ms > 0 and index != last_index:
+        pad_path = work / f"pad-{index:03d}.mp3"
+        first_info = probe_audio(path, tools.ffprobe)
+        pad_seconds = write_inter_chapter_pad_mp3(
+            donor_mp3=path,
+            output_mp3=pad_path,
+            seconds=chapter_gap_ms / 1000.0,
+            tools=tools,
+            seed=9021 + index,
+            sample_rate=first_info.sample_rate,
+            bit_rate=bit_rate,
+        )
+        concat_paths.append(pad_path)
+        chapter_end += pad_seconds
+      chapter_durations.append(chapter_end)
+
     concat_path = work / "concat.txt"
     meta_path = work / "chapters.ffmetadata"
     atomic_write_text(
         concat_path,
-        "\n".join(ffconcat_line(path) for path in track_paths) + "\n",
+        "\n".join(ffconcat_line(path) for path in concat_paths) + "\n",
     )
     atomic_write_text(
         meta_path,
@@ -490,7 +525,7 @@ def assemble_m4b(
             artist=artist,
             album=album,
             chapter_titles=track_titles,
-            chapter_durations=track_durations,
+            chapter_durations=chapter_durations,
         ),
     )
     command = [
@@ -550,7 +585,7 @@ def assemble_m4b(
           f"Assembled M4B has {len(chapters)} chapters; expected {len(track_titles)}."
       )
     info = probe_audio(temporary, tools.ffprobe)
-    expected_duration = sum(float(item) for item in track_durations)
+    expected_duration = sum(chapter_durations)
     delta = abs(info.duration_seconds - expected_duration)
     allowed = max(3.0, expected_duration * 0.05)
     if delta > allowed:

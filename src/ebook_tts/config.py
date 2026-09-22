@@ -142,11 +142,14 @@ def load_config(path: Path | None) -> AppConfig:
     raise ConfigError(f"Unknown top-level setting(s): {', '.join(unknown_root)}")
 
   book_data = _table(data.get("book"), "book")
-  _only(book_data, {"title", "authors", "language"}, "book")
+  _only(book_data, {"title", "authors", "language", "cover"}, "book")
   book = BookOverrides(
       title=_optional_string(book_data.get("title"), "book.title"),
       authors=_strings(book_data.get("authors"), "book.authors"),
       language=_optional_string(book_data.get("language"), "book.language"),
+      cover=_resolve_relative(
+          str(book_data.get("cover", "")).strip(), path.parent if path else None
+      ),
   )
 
   section_data = _table(data.get("sections"), "sections")
@@ -225,14 +228,25 @@ def load_config(path: Path | None) -> AppConfig:
   )
 
   audio_data = _table(data.get("audio"), "audio")
-  _only(audio_data, {"ffmpeg", "ffprobe", "genre"}, "audio")
+  _only(
+      audio_data,
+      {"ffmpeg", "ffprobe", "genre", "m4b_chapter_gap_ms"},
+      "audio",
+  )
   audio = AudioConfig(
       ffmpeg=str(audio_data.get("ffmpeg", defaults.audio.ffmpeg)).strip(),
       ffprobe=str(audio_data.get("ffprobe", defaults.audio.ffprobe)).strip(),
       genre=str(audio_data.get("genre", defaults.audio.genre)).strip(),
+      m4b_chapter_gap_ms=_number(
+          audio_data.get("m4b_chapter_gap_ms"),
+          defaults.audio.m4b_chapter_gap_ms,
+          "audio.m4b_chapter_gap_ms",
+      ),
   )
   if not audio.ffmpeg or not audio.ffprobe:
     raise ConfigError("audio.ffmpeg and audio.ffprobe cannot be empty.")
+  if audio.m4b_chapter_gap_ms < 0:
+    raise ConfigError("audio.m4b_chapter_gap_ms must be >= 0.")
 
   qa_data = _table(data.get("qa"), "qa")
   _only(
@@ -604,6 +618,9 @@ source = "manuscript"
 title = {title}
 authors = [{authors}]
 language = {language}
+# Cover image, relative to this file. Used for the EPUB and for audio cover art,
+# so both editions get the same image without remembering a flag.
+# cover = "cover.png"
 
 [manuscript]
 root = {json.dumps(manuscript_root, ensure_ascii=False)}
@@ -615,6 +632,8 @@ extra_header_keys = true
 
 [accessibility]
 certified_by = ""
+# Describe the cover for a reader who cannot see it. Required in practice
+# whenever book.cover is set; `ebook-tts doctor` warns when it is missing.
 cover_alt = ""
 summary = ""
 
@@ -658,6 +677,9 @@ verbalize_numerals = true
 ffmpeg = "ffmpeg"
 ffprobe = "ffprobe"
 genre = "Audiobook"
+# Comfort-tone pause between M4B chapters (ms). Folded into the preceding
+# chapter marker. 0 concatenates with no pause (not recommended).
+m4b_chapter_gap_ms = 2500
 
 [qa]
 stt_provider = "local"
@@ -719,6 +741,9 @@ context_characters = 500
 ffmpeg = "ffmpeg"
 ffprobe = "ffprobe"
 genre = "Audiobook"
+# Comfort-tone pause between M4B chapters (ms). Folded into the preceding
+# chapter marker. 0 concatenates with no pause (not recommended).
+m4b_chapter_gap_ms = 2500
 
 [qa]
 stt_provider = "none" # "elevenlabs" (Scribe) or "local" (Whisper)

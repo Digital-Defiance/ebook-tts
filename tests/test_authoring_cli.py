@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -193,3 +194,81 @@ def test_chapters_rejects_a_malformed_where_clause(tmp_path, monkeypatch) -> Non
   assert main([
       "chapters", "--config", str(tmp_path / "audiobook.toml"), "--where", "pov_id",
   ]) == 1
+
+
+def _png(path: Path) -> None:
+  """Smallest valid PNG, so cover wiring can be tested without Pillow."""
+  path.write_bytes(
+      bytes.fromhex(
+          "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+          "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+      )
+  )
+
+
+def test_book_cover_is_configuration_not_a_flag(tmp_path, monkeypatch) -> None:
+  monkeypatch.chdir(tmp_path)
+  manuscript = tmp_path / "manuscript"
+  assert main(["init", "--manuscript", str(manuscript)]) == 0
+  config_path = tmp_path / "audiobook.toml"
+  _authored(manuscript, 1, "Start", "One two three.\n")
+  _png(tmp_path / "cover.png")
+  config_path.write_text(
+      config_path.read_text(encoding="utf-8").replace(
+          '# cover = "cover.png"', 'cover = "cover.png"'
+      ),
+      encoding="utf-8",
+  )
+  from ebook_tts.config import load_config
+
+  config = load_config(config_path)
+  # Resolved relative to the config file, not the process working directory.
+  assert Path(config.book.cover) == tmp_path / "cover.png"
+
+  assert main(["check", "--config", str(config_path), "--write-counts"]) == 0
+  # plan picks the cover up with no flag at all
+  assert main([
+      "plan", "--config", str(config_path), "--workspace", str(tmp_path / "ws"),
+  ]) == 0
+  plan = json.loads(
+      next((tmp_path / "ws" / "plans").iterdir()).joinpath("plan.json").read_text()
+  )
+  assert plan["cover"] is not None
+
+
+def test_missing_configured_cover_fails_loudly(tmp_path, monkeypatch) -> None:
+  monkeypatch.chdir(tmp_path)
+  manuscript = tmp_path / "manuscript"
+  assert main(["init", "--manuscript", str(manuscript)]) == 0
+  config_path = tmp_path / "audiobook.toml"
+  _authored(manuscript, 1, "Start", "One two three.\n")
+  config_path.write_text(
+      config_path.read_text(encoding="utf-8").replace(
+          '# cover = "cover.png"', 'cover = "absent.png"'
+      ),
+      encoding="utf-8",
+  )
+  assert main(["check", "--config", str(config_path), "--write-counts"]) == 0
+  # A coverless build is invisible in the output, so this must not pass quietly.
+  assert main(["compile", "--config", str(config_path), "--markdown-only"]) == 0
+  assert main([
+      "plan", "--config", str(config_path), "--workspace", str(tmp_path / "ws"),
+  ]) == 1
+
+
+def test_doctor_warns_when_a_cover_has_no_alt_text(tmp_path, capsys, monkeypatch) -> None:
+  monkeypatch.chdir(tmp_path)
+  manuscript = tmp_path / "manuscript"
+  assert main(["init", "--manuscript", str(manuscript)]) == 0
+  config_path = tmp_path / "audiobook.toml"
+  _png(tmp_path / "cover.png")
+  config_path.write_text(
+      config_path.read_text(encoding="utf-8").replace(
+          '# cover = "cover.png"', 'cover = "cover.png"'
+      ),
+      encoding="utf-8",
+  )
+  main(["doctor", "--config", str(config_path)])
+  out = capsys.readouterr().out
+  assert "cover" in out
+  assert "accessibility.cover_alt" in out

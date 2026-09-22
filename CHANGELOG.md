@@ -24,10 +24,18 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `ebook-tts diagnose find|seam|formats`: turn spoken-gate failures into named
   omission reports, re-check splice windows with Whisper, and confirm
   WAV/MP3/M4B durations agree before shipping a repair
+- Inter-chapter comfort pads in M4B packaging (`audio.m4b_chapter_gap_ms`,
+  default 2500): V6 room tone from the preceding track when available, silence
+  otherwise; pad duration is folded into the preceding chapter marker
 - `ebook-tts check --write-counts`: reconcile each chapter's declared `words:`
   header to its observed prose count. Rewrites only that header line, preserves
   every other key verbatim, fails closed on an unparseable header, and is
   opt-in so the drift signal is never silently erased
+- `book.cover` configuration, consumed by both the EPUB build and the audio plan
+  so one image serves every edition without a remembered `--cover` flag;
+  `compile --cover` still overrides it, a configured-but-absent cover fails
+  loudly, and `doctor` warns when a cover ships with no `accessibility.cover_alt`
+  description
 - `ebook-tts chapters`: list manuscript chapters with `--group-by KEY` and
   repeatable `--where KEY=VALUE` over any header key, including author keys the
   tool does not interpret. Supports reading one viewpoint's chapters

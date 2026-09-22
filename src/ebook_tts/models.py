@@ -145,6 +145,13 @@ class BookOverrides:
   title: str | None = None
   authors: tuple[str, ...] = ()
   language: str | None = None
+  cover: str = ""
+  """Cover image path, resolved relative to the config file.
+
+  A cover is a stable property of the book, not of one invocation, so it
+  belongs here rather than only on a command line. `compile --cover` still
+  overrides it for a one-off build.
+  """
 
 
 @dataclass(frozen=True)
@@ -239,6 +246,9 @@ class AudioConfig:
   ffmpeg: str = "ffmpeg"
   ffprobe: str = "ffprobe"
   genre: str = "Audiobook"
+  # Comfort-tone (or silent) pause folded into each preceding M4B chapter marker
+  # so announcements do not run into the next chapter. 0 disables the pad.
+  m4b_chapter_gap_ms: float = 2500.0
 
 
 @dataclass(frozen=True)

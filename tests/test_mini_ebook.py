@@ -268,6 +268,10 @@ def test_mini_ebook_full_path_to_all_packages(
       for item in chapters
   ]
   assert titles == ["Opening", "Closing"]
+  # Default 2.5s inter-chapter pad is folded into the first chapter marker.
+  first_dur = float(chapters[0]["end_time"]) - float(chapters[0]["start_time"])
+  second_dur = float(chapters[1]["end_time"]) - float(chapters[1]["start_time"])
+  assert first_dur > second_dur + 2.0
 
   reused = package_m4b(plan=plan, run=run, output_directory=output, tools=media_tools)
   assert reused.path == m4b.path

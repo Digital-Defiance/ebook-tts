@@ -995,12 +995,13 @@ def package_m4b(
     allow_failed_qa: bool = False,
     tools: MediaTools | None = None,
     audio_bitrate_kbps: int = 128,
+    chapter_gap_ms: float = 2500.0,
 ) -> PackageArtifact:
   """Build one chaptered M4B from the validated MP3 tracks.
 
   This remuxes through AAC. The package identity still commits to the source
   MP3 track hashes and chapter titles so a rebuild is reuse-safe when those
-  inputs are unchanged.
+  inputs are unchanged. Inter-chapter pad length is part of that identity.
   """
   with WorkspaceLock(plan.workspace):
     context = _package_context(
@@ -1023,15 +1024,18 @@ def package_m4b(
         _member(
             "chapters.json",
             _json_bytes(
-                [
-                    {
-                        "track_number": track.track_number,
-                        "title": track.title,
-                        "duration_seconds": track.duration_seconds,
-                        "sha256": track.sha256,
-                    }
-                    for track in context.tracks
-                ]
+                {
+                    "chapter_gap_ms": chapter_gap_ms,
+                    "chapters": [
+                        {
+                            "track_number": track.track_number,
+                            "title": track.title,
+                            "duration_seconds": track.duration_seconds,
+                            "sha256": track.sha256,
+                        }
+                        for track in context.tracks
+                    ],
+                }
             ),
         )
     )
@@ -1062,6 +1066,7 @@ def package_m4b(
         album=title,
         cover_path=cover,
         audio_bitrate_kbps=audio_bitrate_kbps,
+        chapter_gap_ms=chapter_gap_ms,
     )
     chapters = probe_chapters(target, media.ffprobe)
     if len(chapters) != len(context.tracks):

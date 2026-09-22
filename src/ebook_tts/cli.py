@@ -526,6 +526,19 @@ def _command_doctor(args: argparse.Namespace) -> int:
   except EbookTTSError as exc:
     record("media-tools", False, str(exc))
   record("source", True, config.project.source)
+  if config.book.cover:
+    cover = Path(config.book.cover)
+    record("cover", cover.is_file(), str(cover))
+    # A cover with no alt text is a silent accessibility defect: the image
+    # ships, the screen reader announces nothing, and no output looks wrong.
+    record(
+        "cover-alt",
+        bool(config.accessibility.cover_alt),
+        config.accessibility.cover_alt or "set accessibility.cover_alt to describe the cover",
+        warning=not config.accessibility.cover_alt,
+    )
+  else:
+    record("cover", True, "none configured; set book.cover to ship one", warning=True)
   if config.tts.provider == "local":
     try:
       import mlx_audio
@@ -631,12 +644,35 @@ def _command_init(args: argparse.Namespace) -> int:
   return 0
 
 
+def _selected_cover(args: argparse.Namespace, config: AppConfig) -> Path | None:
+  """Resolve the cover once, so every edition uses the same image.
+
+  Precedence is an explicit `--cover` flag, then `book.cover` in the config. A
+  configured path that does not exist is an error rather than a silent
+  coverless build, because a missing cover is invisible in the output.
+  """
+  override = getattr(args, "cover", None)
+  if override is not None:
+    candidate = override.expanduser()
+    if not candidate.is_file():
+      raise ConfigError(f"--cover is not a file: {candidate}")
+    return candidate
+  if not config.book.cover:
+    return None
+  candidate = Path(config.book.cover).expanduser()
+  if not candidate.is_file():
+    raise ConfigError(f"book.cover is not a file: {candidate}")
+  return candidate
+
+
 def _load_publication(args: argparse.Namespace, config: AppConfig) -> Publication:
   epub = getattr(args, "epub", None)
   if epub is not None:
     return load_publication(epub, config)
   if config.project.source == "manuscript":
-    return publication_from_manuscript(manuscript_root(config), config)
+    return publication_from_manuscript(
+        manuscript_root(config), config, cover_path=_selected_cover(args, config)
+    )
   raise ConfigError(
       'Provide an EPUB path, or set project.source = "manuscript" in audiobook.toml.'
   )
@@ -836,7 +872,7 @@ def _command_compile(args: argparse.Namespace) -> int:
     return 0
   epub = build_epub(
       config,
-      cover=args.cover,
+      cover=_selected_cover(args, config),
       output=args.output,
       if_stale=args.if_stale,
   )
@@ -1298,24 +1334,47 @@ def _package_formats(
     output_directory: Path | None,
     allow_unvalidated: bool,
     allow_failed_qa: bool,
+    chapter_gap_ms: float = 2500.0,
 ) -> list[PackageArtifact]:
   output = (output_directory or (plan.workspace / "dist")).expanduser().resolve()
   selected = formats or ["bookplayer", "archive"]
-  functions = {
-      "bookplayer": package_bookplayer,
-      "archive": package_archive,
-      "tracks": package_tracks,
-      "m4b": package_m4b,
-  }
   artifacts: list[PackageArtifact] = []
   for name in selected:
-    artifact = functions[name](
-        plan=plan,
-        run=run,
-        output_directory=output,
-        allow_unvalidated=allow_unvalidated,
-        allow_failed_qa=allow_failed_qa,
-    )
+    if name == "m4b":
+      artifact = package_m4b(
+          plan=plan,
+          run=run,
+          output_directory=output,
+          allow_unvalidated=allow_unvalidated,
+          allow_failed_qa=allow_failed_qa,
+          chapter_gap_ms=chapter_gap_ms,
+      )
+    elif name == "bookplayer":
+      artifact = package_bookplayer(
+          plan=plan,
+          run=run,
+          output_directory=output,
+          allow_unvalidated=allow_unvalidated,
+          allow_failed_qa=allow_failed_qa,
+      )
+    elif name == "archive":
+      artifact = package_archive(
+          plan=plan,
+          run=run,
+          output_directory=output,
+          allow_unvalidated=allow_unvalidated,
+          allow_failed_qa=allow_failed_qa,
+      )
+    elif name == "tracks":
+      artifact = package_tracks(
+          plan=plan,
+          run=run,
+          output_directory=output,
+          allow_unvalidated=allow_unvalidated,
+          allow_failed_qa=allow_failed_qa,
+      )
+    else:
+      raise ConfigError(f"Unsupported package format: {name}")
     artifacts.append(artifact)
     print(f"{name}: {artifact.path} ({artifact.bytes:,} bytes)")
   return artifacts
@@ -1323,6 +1382,7 @@ def _package_formats(
 
 def _command_package(args: argparse.Namespace) -> int:
   plan = _load_selected_plan(args)
+  config = _load_command_config(args)
   _package_formats(
       plan=plan,
       run=load_run(plan, args.run_id),
@@ -1330,6 +1390,7 @@ def _command_package(args: argparse.Namespace) -> int:
       output_directory=args.output_dir,
       allow_unvalidated=args.allow_unvalidated,
       allow_failed_qa=args.allow_failed_qa,
+      chapter_gap_ms=config.audio.m4b_chapter_gap_ms,
   )
   return 0
 
@@ -1390,6 +1451,7 @@ def _command_build(args: argparse.Namespace) -> int:
       output_directory=args.output_dir,
       allow_unvalidated=False,
       allow_failed_qa=False,
+      chapter_gap_ms=config.audio.m4b_chapter_gap_ms,
   )
   return 0
 

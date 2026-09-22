@@ -76,6 +76,10 @@ book-title-PACKAGEID.m4b
 
 A single chaptered audiobook file built from the validated MP3 tracks. Chapters
 follow track order and titles. Cover art is embedded when the plan has one.
+By default a 2.5s comfort-tone pad (shaped from the preceding chapter when the
+local extra is installed, otherwise silence) is inserted between chapters and
+folded into the preceding chapter marker so announcements do not run together.
+Configure with `audio.m4b_chapter_gap_ms` (set `0` to disable).
 
 This is a second lossy encode (MP3→AAC). Prefer the MP3 track packages as the
 archival/master outputs; use M4B as a convenience distribution for players that

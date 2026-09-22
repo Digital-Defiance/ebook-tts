@@ -122,10 +122,13 @@ reserved for future output backends.
 ffmpeg = "ffmpeg"
 ffprobe = "ffprobe"
 genre = "Audiobook"
+m4b_chapter_gap_ms = 2500
 ```
 
 Executable names resolve through `PATH`; explicit executable paths are also
-accepted.
+accepted. `m4b_chapter_gap_ms` inserts a comfort-tone (or silent) pause after
+every M4B chapter but the last, folded into the preceding chapter marker so
+seeking lands on the announcement. Set `0` to concatenate with no pause.
 
 ## Quality assurance
 
